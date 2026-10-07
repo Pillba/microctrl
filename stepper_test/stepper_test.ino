@@ -7,7 +7,6 @@
 // the number of steps of the motor and the pins it's
 // attached to
 Stepper stepper(STEPS, 2, 3, 4, 5);
-
 // the previous reading from the analog input
 int previous = 0;
 
