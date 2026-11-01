@@ -1,0 +1,11 @@
+# Raspberry Pi ARM uses Debian's python3-pyqt5 package; PyPI does not publish
+# a PyQt5 wheel for ARM, so pip would fall back to a failing source build.
+PyQt5>=5.15; platform_machine != "aarch64" and platform_machine != "armv7l" and platform_machine != "armv6l"
+Pillow>=10.0
+numpy>=1.24
+pyserial>=3.5
+pygame>=2.5
+pyqtgraph>=0.13
+opencv-python>=4.8
+spidev>=3.6; sys_platform == "linux"
+RPi.GPIO>=0.7; sys_platform == "linux"

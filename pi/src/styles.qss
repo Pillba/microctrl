@@ -1,0 +1,230 @@
+* {
+  font-family: "Nunito";
+  font-size: 12px;
+  color: #0F172A;
+}
+
+QMainWindow,
+QWidget#root {
+  background: #F8FAFC;
+}
+
+QMainWindow {
+  background: #F8FAFC;
+}
+
+QStackedWidget,
+QScrollArea,
+QScrollArea > QWidget,
+QScrollArea > QWidget > QWidget {
+  background: #F8FAFC;
+}
+
+QWidget#topbar {
+  background: #0F172A;
+}
+
+QLabel#topbar-title {
+  color: #F8FAFC;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+QPushButton#back-btn {
+  background: transparent;
+  border: none;
+  border-radius: 8px;
+  color: #F8FAFC;
+  font-size: 16px;
+}
+
+QPushButton#back-btn:pressed {
+  background: #1E293B;
+}
+
+QFrame[class="card"] {
+  background: #FFFFFF;
+  border: 1px solid #E2E8F0;
+  border-radius: 12px;
+}
+
+QPushButton[class="primary"] {
+  background: #0D9488;
+  color: #FFFFFF;
+  border: none;
+  border-radius: 12px;
+  font-size: 12px;
+  font-weight: 700;
+  min-height: 40px;
+}
+
+QPushButton[class="primary"]:disabled {
+  background: #E2E8F0;
+  color: #64748B;
+}
+
+QPushButton[class="secondary"] {
+  background: #E2E8F0;
+  color: #0F172A;
+  border: none;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+QPushButton[class="destructive"] {
+  background: #FEF2F2;
+  color: #EF4444;
+  border: 1px solid rgba(239, 68, 68, 0.2);
+  border-radius: 8px;
+  font-weight: 700;
+}
+
+QPushButton[class="nav-card"] {
+  border: none;
+  border-radius: 14px;
+  text-align: left;
+}
+
+QPushButton[class="stepper"] {
+  background: #E2E8F0;
+  border: none;
+  border-radius: 8px;
+  min-width: 36px;
+  min-height: 36px;
+}
+
+QComboBox {
+  background: #F1F5F9;
+  border: 1px solid #E2E8F0;
+  border-radius: 8px;
+  padding: 6px 12px;
+}
+
+QSlider::groove:horizontal {
+  height: 6px;
+  background: #E2E8F0;
+  border-radius: 3px;
+}
+
+QSlider::sub-page:horizontal {
+  background: #0D9488;
+  border-radius: 3px;
+}
+
+QSlider::handle:horizontal {
+  background: #0D9488;
+  width: 16px;
+  height: 16px;
+  border-radius: 8px;
+  margin: -5px 0;
+}
+
+QScrollArea {
+  border: none;
+  background: transparent;
+}
+
+QScrollBar:vertical {
+  width: 0px;
+}
+
+QFrame[class="warning"] {
+  background: #FFFBEB;
+  border: 1px solid #FDE68A;
+  border-radius: 12px;
+}
+
+QFrame[class="success"] {
+  background: #F0FDFA;
+  border: 1px solid rgba(13, 148, 136, 0.3);
+  border-radius: 12px;
+}
+
+QLabel[class="micro-label"] {
+  color: #64748B;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 1px;
+}
+
+QLabel[class="body"] {
+  font-size: 12px;
+  color: #0F172A;
+}
+
+QLabel[class="caption"] {
+  font-size: 11px;
+  color: #64748B;
+}
+
+QLabel[class="clock"] {
+  font-size: 28px;
+  font-weight: 700;
+  color: #FFFFFF;
+}
+
+QLabel[class="page-title"] {
+  font-size: 14px;
+  font-weight: 600;
+  color: #F8FAFC;
+}
+
+QLabel[class="card-title"] {
+  font-size: 12px;
+  font-weight: 700;
+  color: #0F172A;
+}
+
+QLabel[class="nav-title"] {
+  font-size: 12px;
+  font-weight: 700;
+  color: #FFFFFF;
+}
+
+QLabel[class="nav-subtitle"] {
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.72);
+}
+
+QLabel[class="nav-chevron"] {
+  font-size: 22px;
+  color: rgba(255, 255, 255, 0.6);
+}
+
+QFrame[class="device-card"] {
+  background: #FFFFFF;
+  border: 1px solid #E2E8F0;
+  border-radius: 12px;
+}
+
+QFrame[class="section-card"] {
+  background: #FFFFFF;
+  border: 1px solid #E2E8F0;
+  border-radius: 12px;
+}
+
+QFrame[class="status-banner"] {
+  background: #F0FDFA;
+  border: 1px solid rgba(13, 148, 136, 0.18);
+  border-radius: 12px;
+}
+
+QFrame[class="warning-banner"] {
+  background: #FFFBEB;
+  border: 1px solid #FDE68A;
+  border-radius: 12px;
+}
+
+/* Use a high-contrast focus ring for keyboard and physical-button navigation. */
+QPushButton:focus[focus-visible="true"],
+QAbstractButton:focus[focus-visible="true"],
+QComboBox:focus[focus-visible="true"],
+QLineEdit:focus[focus-visible="true"],
+QSlider:focus[focus-visible="true"] {
+  border: 3px solid #030ffc;
+}
+
+QPushButton[class="nav-card"]:focus[focus-visible="true"] {
+  border: 3px solid #030ffc;
+}

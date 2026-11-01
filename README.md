@@ -2,8 +2,39 @@
 
 ---
 
-Stored In this repository is PlatformIO projects and Arduino sketches for
-controlling peripherals via the Arduino ATmega328p.
+This repository contains the production firmware boundary for the Pillba
+dispenser, the Raspberry Pi application boundary, and the shared Pi–MCU
+protocol. Legacy Arduino sketches and PlatformIO experiments are preserved
+under `archive/legacy/`.
+
+The target production layout is:
+
+```text
+firmware/       MCU PlatformIO project and subsystem modules
+pi/             Raspberry Pi application and tests
+protocol/       Shared wire contract and byte-level vectors
+docs/           Architecture, collaboration, database, and testing rules
+archive/legacy/ Superseded sketches and experiments
+```
+
+## Project documentation
+
+The production split, ownership boundaries, protocol contract,
+database rules, and validation strategy are documented in:
+
+- [Architecture](docs/architecture.md)
+- [Collaboration rules](docs/collaboration.md)
+- [Pi–MCU protocol](docs/protocol.md)
+- [Pi SQLite rules](docs/database.md)
+- [Testing and hardware validation](docs/testing.md)
+
+The Pi application was seeded from the existing
+`/Users/Owner/workspace-school/sd1/panel-ui/` project. Its UI and database
+behavior remain prototype material until covered by the transaction and
+integration tests described in the documentation.
+
+Existing sketches and experiments remain legacy material until they are
+intentionally promoted into the production `firmware/` or `pi/` applications.
 
 Peripherals Include:
 
