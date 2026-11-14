@@ -34,7 +34,14 @@ bool Scale::waitForWeight(unsigned long timeoutMs, PollHook hook)
     return false;
 }
 
-bool Scale::steadyGrams(float &grams)
+bool Scale::tryGrams(float &grams, uint8_t scans, unsigned long timeoutMs)
+{
+    if (!hx711_.wait_ready_timeout(timeoutMs)) return false;
+    grams = hx711_.get_units(scans);
+    return true;
+}
+
+bool Scale::steadyGrams(float &grams, PollHook hook)
 {
     float recent[3] = {0, 0, 0};
     uint8_t filled = 0;
@@ -42,6 +49,7 @@ bool Scale::steadyGrams(float &grams)
     const unsigned long start = millis();
     while (millis() - start < board::STEADY_WAIT_MS)
     {
+        if (hook) hook();
         recent[0] = recent[1];
         recent[1] = recent[2];
         recent[2] = hx711_.get_units(board::CHECK_SCANS);

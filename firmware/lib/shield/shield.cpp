@@ -1,5 +1,18 @@
 #include "shield.h"
 
+namespace
+{
+// Runs hook (if any) for ms milliseconds.
+void waitWithHook(unsigned long ms, PollHook hook)
+{
+    const unsigned long start = millis();
+    while (millis() - start < ms)
+    {
+        if (hook) hook();
+    }
+}
+} // namespace
+
 void Shield::begin()
 {
     pinMode(board::HALL_CLOSED_PIN, INPUT_PULLUP);
@@ -10,11 +23,13 @@ void Shield::begin()
 
 bool Shield::closedDetected() const
 {
+    if (!sensorsFitted()) return false;
     return digitalRead(board::HALL_CLOSED_PIN) == board::HALL_ACTIVE_LEVEL;
 }
 
 bool Shield::openDetected() const
 {
+    if (!sensorsFitted()) return false;
     return digitalRead(board::HALL_OPEN_PIN) == board::HALL_ACTIVE_LEVEL;
 }
 
@@ -25,6 +40,8 @@ void Shield::command(bool open)
 
 bool Shield::update()
 {
+    if (!sensorsFitted()) return false;
+
     HallState reading = HallState::BETWEEN;
     const bool closed = closedDetected();
     const bool open = openDetected();
@@ -48,16 +65,23 @@ bool Shield::update()
     return false;
 }
 
-bool Shield::move(bool open, unsigned long timeoutMs)
+bool Shield::move(bool open, unsigned long timeoutMs, PollHook hook)
 {
     command(open);
+    if (!sensorsFitted())
+    {
+        waitWithHook(board::SHIELD_TRAVEL_MS, hook);  // nothing can confirm the move
+        return false;
+    }
+
     const unsigned long start = millis();
     while (millis() - start < timeoutMs)
     {
+        if (hook) hook();
         update();
         if (open ? openDetected() : closedDetected())
         {
-            delay(board::SHIELD_SETTLE_MS);  // let the servo finish its travel
+            waitWithHook(board::SHIELD_SETTLE_MS, hook);  // let the servo finish its travel
             update();
             return true;
         }

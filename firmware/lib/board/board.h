@@ -25,6 +25,12 @@ constexpr uint8_t SERVO_PIN = 9;
 constexpr uint8_t HALL_CLOSED_PIN = 3;  // HALL1, detects the shield closed
 constexpr uint8_t HALL_OPEN_PIN = 4;    // HALL2, detects the shield open
 
+// The hall sensors are NOT FITTED yet: pins 3 and 4 are reserved but unwired. While this is false the
+// shield code never reads them, and a shield move waits SHIELD_TRAVEL_MS instead of a hall confirmation
+// (it reports the move as unconfirmed). Set it to true only after wiring both sensors and checking the
+// HALL lines with bench_console (8 / 9).
+constexpr bool HALL_SENSORS_FITTED = false;
+
 // Pump 2 driver (PUMP2)
 constexpr uint8_t PUMP_PIN = 6;
 
@@ -49,6 +55,7 @@ constexpr uint8_t HALL_ACTIVE_LEVEL = LOW;
 constexpr uint16_t HALL_DEBOUNCE_MS = 20;
 constexpr unsigned long SHIELD_WAIT_MS = 4000;  // how long a hall sensor gets to confirm a move
 constexpr uint16_t SHIELD_SETTLE_MS = 300;      // servo travel after the hall sensor confirms
+constexpr uint16_t SHIELD_TRAVEL_MS = 700;      // without hall sensors: time the servo gets for a full move
 
 // Pump
 constexpr uint8_t PUMP_ON_LEVEL = HIGH;
@@ -68,6 +75,10 @@ constexpr unsigned long WEIGHT_WAIT_MS = 5000; // how long to wait for any weigh
 constexpr unsigned long STEADY_WAIT_MS = 15000;
 constexpr unsigned long SCALE_READY_TIMEOUT_MS = 1000;
 constexpr float DEFAULT_CALIBRATION_FACTOR = 420.00;
+constexpr unsigned long SCALE_READ_TIMEOUT_MS = 200;  // one reading while the pump runs (HX711 at 10 Hz)
+
+// Liquid dispense (slot 7, pump into the weighed cup). Volume limits and timing live in dispense_rules.h.
+constexpr uint16_t LIQUID_DRIP_MS = 1000;      // after the pump stops, let the tube drip before weighing
 
 // EEPROM layout (shared by every app, so a calibration made in bench_console is used by production)
 constexpr int EEPROM_ADDR_MARKER = 0;

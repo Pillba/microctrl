@@ -5,6 +5,8 @@
 // Commands:
 //   test 1 ... test 6   whole dispense on that stepper (shield, tare, stepper, IR, weight, shield open, sound)
 //                       If a check fails, the shield stays closed and it says why.
+//   test 7 [ml]         whole liquid dispense (shield, tare, pump until ml * 1.00 g/mL, weight, shield open),
+//                       default 5 mL, at most dispense::LIQUID_MAX_ML
 //   1 ... 6             run that stepper again and again (1000 steps, pause, repeat)
 //   stop                stop the stepper loop
 //   9 / 8               open / close the shield (no hall confirmation)
@@ -16,6 +18,7 @@
 //   e <grams>           set the expected weight for "test" without flashing again, for example  e 0.146
 //
 // IR break beam: the clear level is learned at power up, so keep the beam CLEAR when the board starts.
+// Hall sensors: optional (board::HALL_SENSORS_FITTED). Without them shield moves are not confirmed.
 
 #include <Arduino.h>
 
@@ -36,13 +39,14 @@ const uint32_t UART_BAUD = 9600;
 const size_t MAX_MESSAGE_LENGTH = 64;
 const uint16_t LOOP_PAUSE_MS = 3000;
 const float MG_PER_GRAM = 1000.0;
+const uint8_t DEFAULT_TEST_ML = 5;
 
 StepperBank steppers;
 Shield shield;
 IrBeam ir;
 Scale scale;
 Pump pump;
-DispenseSequence dispenser(steppers, shield, ir, scale);
+DispenseSequence dispenser(steppers, shield, ir, scale, pump);
 
 char message[MAX_MESSAGE_LENGTH];
 size_t messageLength = 0;
@@ -62,6 +66,11 @@ void sendPlay(uint8_t soundNumber)
 {
     CONSOLE.print(F("PLAY:"));
     CONSOLE.println(soundNumber);
+}
+
+void pumpLine(bool on)
+{
+    CONSOLE.println(on ? F("PUMP:on") : F("PUMP:off"));
 }
 
 void printServoCommand(bool open)
@@ -88,7 +97,9 @@ void printFailure(const DispenseReport &report)
         reason = F("the IR beam was not tripped. Nothing fell, or the beam did not see it.");
         break;
     case dispense::RESULT_NO_WEIGHT:
-        reason = F("the IR beam tripped but no weight reached the cup.");
+        reason = dispense::isLiquidSlot(report.slot)
+                     ? F("no liquid reached the cup. Check the reservoir and the tube.")
+                     : F("the IR beam tripped but no weight reached the cup.");
         break;
     case dispense::RESULT_WEIGHT_MISMATCH:
         CONSOLE.print(F("ERROR: Weight out of range. Off by "));
@@ -109,8 +120,17 @@ void onDispenseEvent(DispenseEvent event, const DispenseReport &report)
     switch (event)
     {
     case DispenseEvent::STARTED:
-        CONSOLE.print(F("TEST: Starting automated dispense on board "));
-        CONSOLE.println(report.slot);
+        if (dispense::isLiquidSlot(report.slot))
+        {
+            CONSOLE.print(F("TEST: Starting automated liquid dispense of "));
+            CONSOLE.print(report.quantity);
+            CONSOLE.println(F(" mL"));
+        }
+        else
+        {
+            CONSOLE.print(F("TEST: Starting automated dispense on board "));
+            CONSOLE.println(report.slot);
+        }
         if (!scale.calibrated())
             CONSOLE.println(F("WARNING: The scale is NOT calibrated on this board, so the weight will be wrong. Send c first."));
         break;
@@ -120,6 +140,7 @@ void onDispenseEvent(DispenseEvent event, const DispenseReport &report)
         break;
     case DispenseEvent::SHIELD_CLOSED:
         if (report.shieldConfirmed) CONSOLE.println(F("VERIFY: Shield closed, hall sensor confirms."));
+        else if (!Shield::sensorsFitted()) CONSOLE.println(F("NOTE: Shield commanded closed (no hall sensors fitted)."));
         else CONSOLE.println(F("WARNING: The hall sensor did NOT confirm that the shield is closed. Carrying on."));
         break;
     case DispenseEvent::TARING:
@@ -146,6 +167,20 @@ void onDispenseEvent(DispenseEvent event, const DispenseReport &report)
         CONSOLE.print(report.trips);
         CONSOLE.println(report.trips == 1 ? F(" time.") : F(" times. More than one thing may have fallen."));
         break;
+    case DispenseEvent::PUMPING:
+        CONSOLE.print(F("TEST: Pumping until the cup gains "));
+        printGrams(report.expectedG);
+        CONSOLE.println(F("..."));
+        pumpLine(true);
+        break;
+    case DispenseEvent::PUMPED:
+        pumpLine(false);
+        CONSOLE.print(F("VERIFY: Pump stopped after "));
+        CONSOLE.print(report.pumpMs);
+        CONSOLE.print(F(" ms at "));
+        printGrams(report.grams);
+        CONSOLE.println();
+        break;
     case DispenseEvent::WEIGHT_WAITING:
         CONSOLE.println(F("TEST: Waiting for the weight to arrive and become steady..."));
         break;
@@ -171,6 +206,7 @@ void onDispenseEvent(DispenseEvent event, const DispenseReport &report)
         break;
     case DispenseEvent::SHIELD_OPENED:
         if (report.shieldConfirmed) CONSOLE.println(F("VERIFY: Shield open, hall sensor confirms."));
+        else if (!Shield::sensorsFitted()) CONSOLE.println(F("NOTE: Shield commanded open (no hall sensors fitted)."));
         else CONSOLE.println(F("WARNING: The hall sensor did NOT confirm that the shield is open."));
         break;
     case DispenseEvent::PASSED:
@@ -263,16 +299,26 @@ void handleMessage()
     else if (strncmp_P(message, PSTR("test "), 5) == 0)
     {
         const uint8_t boardNum = message[5] - '0';
-        if (dispense::validSlot(boardNum) && message[6] == '\0')
+        uint8_t quantity = 1;
+        bool ok = dispense::validSlot(boardNum) && message[6] == '\0';
+        if (dispense::isLiquidSlot(boardNum) && (message[6] == '\0' || message[6] == ' '))
+        {
+            const int ml = (message[6] == ' ') ? atoi(message + 7) : DEFAULT_TEST_ML;
+            ok = ml >= 1 && ml <= 255 && dispense::validRequest(boardNum, (uint8_t)ml);
+            quantity = ok ? (uint8_t)ml : 0;
+        }
+        if (ok)
         {
             activeBoard = 0;
             commandChanged = true;
             DispenseReport report;
-            dispenser.run(boardNum, 1, report);
+            dispenser.run(boardNum, quantity, report);
         }
         else
         {
-            CONSOLE.println(F("ERROR: Invalid test board number (use test 1 to test 6)"));
+            CONSOLE.print(F("ERROR: Invalid test (use test 1 to test 6, or test 7 <1 to "));
+            CONSOLE.print(dispense::LIQUID_MAX_ML);
+            CONSOLE.println(F(" mL>)"));
         }
     }
     else if (message[1] == '\0' && message[0] >= '1' && message[0] <= '6')
@@ -394,6 +440,8 @@ void setup()
     ir.begin();
     dispenser.setListener(onDispenseEvent);
 
+    if (!Shield::sensorsFitted())
+        CONSOLE.println(F("SETUP: Hall sensors not fitted, shield moves are not confirmed."));
     CONSOLE.print(F("SETUP: IR beam, a clear beam reads "));
     CONSOLE.println(ir.clearReadsHigh() ? F("HIGH.") : F("LOW."));
     if (scale.calibrated())

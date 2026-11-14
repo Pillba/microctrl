@@ -88,4 +88,35 @@ DispatchDecision decideDispense(const Frame &frame, bool busy, DispenseCommand &
     if (busy) return DISPATCH_REJECT_BUSY;
     return DISPATCH_ACCEPT;
 }
+
+bool decodeBenchCommand(const Frame &frame, BenchCommand &command)
+{
+    if (frame.type != MSG_BENCH_CMD || frame.length != BENCH_CMD_LENGTH) return false;
+    for (uint8_t i = 0; i < REQUEST_ID_LENGTH; i++) command.requestId[i] = frame.payload[i];
+    command.command = frame.payload[4];
+    command.arg = (uint32_t)frame.payload[5] | ((uint32_t)frame.payload[6] << 8) |
+                  ((uint32_t)frame.payload[7] << 16) | ((uint32_t)frame.payload[8] << 24);
+    return true;
+}
+
+uint8_t encodeBenchResult(const BenchCommand &command, uint8_t status, int32_t value, uint8_t *out,
+                          uint8_t outSize)
+{
+    uint8_t payload[BENCH_RESULT_LENGTH];
+    for (uint8_t i = 0; i < REQUEST_ID_LENGTH; i++) payload[i] = command.requestId[i];
+    payload[4] = command.command;
+    payload[5] = status;
+    const uint32_t raw = (uint32_t)value;
+    for (uint8_t i = 0; i < 4; i++) payload[6 + i] = (uint8_t)(raw >> (8 * i));
+    return encodeFrame(MSG_BENCH_RESULT, payload, sizeof(payload), out, outSize);
+}
+
+DispatchDecision decideCalibration(const Frame &frame, bool busy, BenchCommand &command)
+{
+    if (!decodeBenchCommand(frame, command)) return DISPATCH_IGNORE;
+    if (command.command != BENCH_CALIBRATE_START && command.command != BENCH_CALIBRATE_FINISH)
+        return DISPATCH_IGNORE;
+    if (busy) return DISPATCH_REJECT_BUSY;
+    return DISPATCH_ACCEPT;
+}
 } // namespace protocol

@@ -20,9 +20,13 @@ public:
     // Waits up to timeoutMs for a quick check to show any weight. Runs hook between checks.
     bool waitForWeight(unsigned long timeoutMs, PollHook hook = nullptr);
 
-    // Waits until 3 quick checks agree within STEADY_BAND_G, then takes a full reading.
-    // Returns true if the reading became steady before STEADY_WAIT_MS.
-    bool steadyGrams(float &grams);
+    // One reading that never blocks forever: false if the HX711 is not ready within timeoutMs.
+    // Use scans = 1 where the HX711 may disappear (each extra scan waits for it without a timeout).
+    bool tryGrams(float &grams, uint8_t scans = 1, unsigned long timeoutMs = board::SCALE_READ_TIMEOUT_MS);
+
+    // Waits until 3 quick checks agree within STEADY_BAND_G, then takes a full reading. Runs hook
+    // (if set) between checks. Returns true if the reading became steady before STEADY_WAIT_MS.
+    bool steadyGrams(float &grams, PollHook hook = nullptr);
 
     // Raw spread (max - min) over a number of raw readings.
     long noiseSpread(uint8_t readings = 50);

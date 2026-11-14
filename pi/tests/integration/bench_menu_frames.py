@@ -1,9 +1,17 @@
 """Interactive bench menu for firmware/bench/dispense_UI over the framed protocol.
 
 Same menu as the plain-text firmware/bench/dispense/src/dispense.cpp, but every
-command is sent as a CRC-checked frame at 115200 baud instead of an ASCII line:
+command is sent as a CRC-checked frame at 115200 baud instead of an ASCII line.
+The production firmware answers only test, raw, busy, noise and c (it ignores
+the other bench commands, so they time out):
 
     test N [Q]   DISPENSE_CMD slot N, quantity Q (default 1)  -> DISPENSE_RESULT
+                 (N = 7 is the liquid dispenser, Q in mL)
+    raw S Q      DISPENSE_CMD with no range check (slot 0, 8, quantity 0, ...)
+    busy N [Q]   test N, then a second command 1 s later: expects BUSY (3)
+                 for the second within 5 s, then the first one's result
+    noise N [Q]  test N while random non-0xAA bytes are sent: expects exactly
+                 one reply
     1 ... 6      BENCH_CMD STEPPER_LOOP N    (run that stepper again and again)
     stop         BENCH_CMD STOP
     9 / 8        BENCH_CMD SHIELD open / closed
@@ -19,18 +27,26 @@ The MCU answers with BENCH_RESULT / DISPENSE_RESULT frames, sends BENCH_EVENT
 frames (PLAY sound, HALL sensor, READY), and still logs dispense progress as
 plain text lines. Both are shown as they arrive.
 
+The port is --port, else PILLBA_UART_PORT, else /dev/ttyUSB0 if it exists,
+else /dev/serial0.
+
 Interactive:
     PYTHONPATH=pi/src python pi/tests/integration/bench_menu_frames.py --port /dev/cu.usbserial-1140
 
 Scripted (exit code 0 only if every command succeeds):
     PYTHONPATH=pi/src python pi/tests/integration/bench_menu_frames.py \\
         --port /dev/serial0 -c 8 -c "test 1" -c w
+
+Expected failures (a dispense passes when its result code is C):
+    PYTHONPATH=pi/src python pi/tests/integration/bench_menu_frames.py \\
+        --expect-code 2 -c "raw 0 1" -c "raw 8 1" -c "raw 1 0"
 """
 
 from __future__ import annotations
 
 import argparse
 import itertools
+import os
 import queue
 import sys
 import threading
@@ -49,8 +65,11 @@ from protocol.uart_protocol import (  # noqa: E402
     encode_frame,
 )
 
-DEFAULT_PORT = "/dev/serial0"
+PORT_ENV = "PILLBA_UART_PORT"
+DEFAULT_PORTS = ("/dev/ttyUSB0", "/dev/serial0")
+DEFAULT_PORT = DEFAULT_PORTS[-1]
 BAUD = 115200
+LIQUID_SLOT = 7
 
 FRAME_SYNC_0 = 0xAA
 FRAME_SYNC_1 = 0x55
@@ -117,6 +136,37 @@ MICROGRAMS_PER_GRAM = 1_000_000
 
 HELP = __doc__.split("\n\n")[2]
 
+BUSY_DELAY = 1.0        # busy: seconds between the first and the second command
+BUSY_REPLY_WAIT = 5.0   # busy: how long the BUSY reply to the second command may take
+NOISE_INTERVAL = 0.2    # noise: seconds between bursts of random bytes
+NOISE_BURST = 8         # noise: bytes per burst
+EXTRA_REPLY_WAIT = 2.0  # noise: how long to listen for extra replies after the result
+
+
+def default_port(environ=os.environ, exists=os.path.exists) -> str:
+    """PILLBA_UART_PORT, else the first of DEFAULT_PORTS that exists."""
+    configured = environ.get(PORT_ENV, "").strip()
+    if configured:
+        return configured
+    for candidate in DEFAULT_PORTS:
+        if exists(candidate):
+            return candidate
+    return DEFAULT_PORT
+
+
+def dispense_timeout(slot: int, quantity: int) -> float:
+    """Longer than the MCU's worst case (protocol/protocol.md)."""
+    if slot == LIQUID_SLOT:
+        return 50.0 + 2.0 * quantity
+    if 1 <= slot <= 6 and quantity > 0:
+        return 45.0 + 15.0 * quantity
+    return 10.0  # an invalid request is answered at once
+
+
+def noise_bytes(size: int = NOISE_BURST) -> bytes:
+    """Random bytes that can never start a frame (no 0xAA)."""
+    return bytes(b if b != FRAME_SYNC_0 else 0x00 for b in os.urandom(size))
+
 
 class MenuError(ValueError):
     """The typed line is not a valid menu command."""
@@ -156,6 +206,18 @@ def grams_to_micrograms(text: str) -> int:
     return round(grams * MICROGRAMS_PER_GRAM)
 
 
+def parse_test_words(words: list[str]) -> tuple[int, int]:
+    """'test N [Q]' (also busy / noise): slot 1-7 and quantity 1-255."""
+    if len(words) not in (2, 3) or not words[1].isdigit() or not 1 <= int(words[1]) <= LIQUID_SLOT:
+        raise MenuError(f"use {words[0]} 1 to {words[0]} 7, optionally followed by a quantity (mL for 7)")
+    if len(words) == 3 and not words[2].isdigit():
+        raise MenuError("quantity must be 1 to 255")
+    quantity = int(words[2]) if len(words) == 3 else 1
+    if not 1 <= quantity <= 255:
+        raise MenuError("quantity must be 1 to 255")
+    return int(words[1]), quantity
+
+
 def parse_menu_line(line: str, request_id: bytes) -> MenuCommand:
     """Map one dispense.cpp menu line to its frame. 'c' is two steps, see run_calibration()."""
     words = line.strip().split()
@@ -163,16 +225,23 @@ def parse_menu_line(line: str, request_id: bytes) -> MenuCommand:
         raise MenuError("empty command")
     word = words[0].lower()
 
-    if word == "test":
-        if len(words) not in (2, 3) or not words[1].isdigit() or not 1 <= int(words[1]) <= 6:
-            raise MenuError("use test 1 to test 6, optionally followed by a quantity")
-        quantity = int(words[2]) if len(words) == 3 else 1
-        if not 1 <= quantity <= 255:
-            raise MenuError("quantity must be 1 to 255")
+    if word in ("test", "busy", "noise"):
+        slot, quantity = parse_test_words(words)
+        unit = "mL" if slot == LIQUID_SLOT else "quantity"
         return MenuCommand(
-            dispense_frame(request_id, int(words[1]), quantity),
-            timeout=45.0 + 15.0 * quantity,
-            label=f"test {words[1]} (quantity {quantity})",
+            dispense_frame(request_id, slot, quantity),
+            timeout=dispense_timeout(slot, quantity),
+            label=f"{word} {slot} ({unit} {quantity})",
+        )
+
+    if word == "raw":
+        if len(words) != 3 or not all(w.isdigit() and int(w) <= 255 for w in words[1:]):
+            raise MenuError("use raw <slot 0-255> <quantity 0-255>")
+        slot, quantity = int(words[1]), int(words[2])
+        return MenuCommand(
+            dispense_frame(request_id, slot, quantity),
+            timeout=dispense_timeout(slot, quantity),
+            label=f"raw slot {slot} quantity {quantity}",
         )
 
     if len(words) == 1 and word in {"1", "2", "3", "4", "5", "6"}:
@@ -250,8 +319,12 @@ def describe_frame(frame: Frame) -> str:
     return f"FRAME 0x{frame.msg_type:02X}: {p.hex(' ').upper()}"
 
 
-def frame_succeeded(frame: Frame, sent: Frame) -> bool:
+def frame_succeeded(frame: Frame, sent: Frame, expect_code: int | None = None) -> bool:
+    """A DISPENSE_RESULT passes with code 0 and every unit confirmed, or, when
+    expect_code is set, when its code is expect_code."""
     if frame.msg_type == DISPENSE_RESULT:
+        if expect_code is not None:
+            return frame.payload[5] == expect_code
         return frame.payload[5] == 0 and frame.payload[6] == sent.payload[5]
     return frame.payload[5] in SUCCESS_STATUSES
 
@@ -315,12 +388,17 @@ class StreamSplitter:
 
 
 class BenchSession:
-    def __init__(self, connection, verbose: bool) -> None:
+    def __init__(self, connection, verbose: bool, expect_code: int | None = None) -> None:
         self._connection = connection
         self._verbose = verbose
+        self.expect_code = expect_code
         self._splitter = StreamSplitter()
         self._responses: queue.Queue[Frame] = queue.Queue()
+        self._stash: dict[bytes, Frame] = {}
         self._ids = itertools.count(1)
+        self.busy_delay = BUSY_DELAY
+        self.noise_interval = NOISE_INTERVAL
+        self.extra_reply_wait = EXTRA_REPLY_WAIT
         self._stop = threading.Event()
         self._reader = threading.Thread(target=self._read_loop, daemon=True)
 
@@ -351,27 +429,102 @@ class BenchSession:
                 else:
                     self._responses.put(item)
 
-    def send(self, command: MenuCommand) -> bool:
-        raw = encode_frame(command.frame.msg_type, command.frame.payload)
-        print(f"  TX   {raw.hex(' ').upper()}   ({command.label})", flush=True)
+    def _write(self, frame: Frame, label: str) -> None:
+        raw = encode_frame(frame.msg_type, frame.payload)
+        print(f"  TX   {raw.hex(' ').upper()}   ({label})", flush=True)
         self._connection.write(raw)
         self._connection.flush()
 
-        request_id = command.frame.payload[:4]
-        deadline = time.monotonic() + command.timeout
+    def _next_response(self, timeout: float) -> Frame | None:
+        try:
+            return self._responses.get(timeout=timeout)
+        except queue.Empty:
+            return None
+
+    def _await(self, request_id: bytes, timeout: float, keep: tuple[bytes, ...] = ()) -> Frame | None:
+        """The response to request_id, or None after timeout. Answers to the
+        request IDs in keep are stashed for a later _await; others are shown."""
+        if request_id in self._stash:
+            return self._stash.pop(request_id)
+        deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            try:
-                frame = self._responses.get(timeout=0.1)
-            except queue.Empty:
+            frame = self._next_response(0.1)
+            if frame is None:
                 continue
-            if frame.payload[:4] != request_id:
-                print(f"  (late answer to another request) {describe_frame(frame)}", flush=True)
+            answered = frame.payload[:4]
+            if answered == request_id:
+                return frame
+            if answered in keep:
+                self._stash[answered] = frame
                 continue
-            ok = frame_succeeded(frame, command.frame)
-            print(f"  {'PASS' if ok else 'FAIL'}: {describe_frame(frame)}", flush=True)
-            return ok
-        print(f"  FAIL: no answer within {command.timeout:.0f} s (outcome UNKNOWN)", flush=True)
-        return False
+            print(f"  (late answer to another request) {describe_frame(frame)}", flush=True)
+        return None
+
+    def _judge(self, frame: Frame | None, sent: Frame, timeout: float) -> bool:
+        if frame is None:
+            print(f"  FAIL: no answer within {timeout:.0f} s (outcome UNKNOWN)", flush=True)
+            return False
+        ok = frame_succeeded(frame, sent, self.expect_code)
+        print(f"  {'PASS' if ok else 'FAIL'}: {describe_frame(frame)}", flush=True)
+        return ok
+
+    def send(self, command: MenuCommand) -> bool:
+        self._write(command.frame, command.label)
+        frame = self._await(command.frame.payload[:4], command.timeout)
+        return self._judge(frame, command.frame, command.timeout)
+
+    def run_busy(self, command: MenuCommand) -> bool:
+        """A second command during a dispense must be answered BUSY (3) at once."""
+        first = command.frame
+        second = dispense_frame(self.next_request_id(), first.payload[4], first.payload[5])
+        started = time.monotonic()
+        self._write(first, command.label)
+        time.sleep(self.busy_delay)
+        self._write(second, "second command, expect BUSY")
+        reply = self._await(second.payload[:4], BUSY_REPLY_WAIT, keep=(first.payload[:4],))
+        busy_ok = (
+            reply is not None
+            and reply.msg_type == DISPENSE_RESULT
+            and reply.payload[5] == 3
+            and reply.payload[6] == 0
+        )
+        if reply is None:
+            print(f"  FAIL: no BUSY within {BUSY_REPLY_WAIT:.0f} s", flush=True)
+        else:
+            print(f"  {'PASS' if busy_ok else 'FAIL'} (second): {describe_frame(reply)}", flush=True)
+        remaining = max(0.0, command.timeout - (time.monotonic() - started))
+        first_ok = self._judge(self._await(first.payload[:4], remaining), first, command.timeout)
+        return busy_ok and first_ok
+
+    def run_noise(self, command: MenuCommand) -> bool:
+        """Random non-0xAA bytes during a dispense must not cause extra replies."""
+        sent = command.frame
+        request_id = sent.payload[:4]
+        self._write(sent, command.label)
+        result: Frame | None = None
+        extra: list[Frame] = []
+        bursts = 0
+        deadline = time.monotonic() + command.timeout
+        next_burst = time.monotonic()
+        while time.monotonic() < deadline:
+            now = time.monotonic()
+            if result is None and now >= next_burst:
+                self._connection.write(noise_bytes())
+                self._connection.flush()
+                bursts += 1
+                next_burst = now + self.noise_interval
+            frame = self._next_response(0.01)
+            if frame is None:
+                continue
+            if frame.payload[:4] == request_id and result is None:
+                result = frame
+                deadline = time.monotonic() + self.extra_reply_wait  # keep listening for extras
+            else:
+                extra.append(frame)
+        print(f"  sent {bursts} bursts of random bytes", flush=True)
+        for frame in extra:
+            print(f"  FAIL (extra reply): {describe_frame(frame)}", flush=True)
+        return self._judge(result, sent, command.timeout) and not extra
 
     def run_calibration(self, ask) -> bool:
         """The two-step 'c' flow. ask(prompt) returns the user's answer."""
@@ -403,7 +556,13 @@ class BenchSession:
     def run_line(self, line: str, ask=input) -> bool:
         if line.strip().lower() == "c":
             return self.run_calibration(ask)
-        return self.send(parse_menu_line(line, self.next_request_id()))
+        command = parse_menu_line(line, self.next_request_id())
+        word = line.split()[0].lower()
+        if word == "busy":
+            return self.run_busy(command)
+        if word == "noise":
+            return self.run_noise(command)
+        return self.send(command)
 
 
 # ---------------------------------------------------------------- main
@@ -449,11 +608,14 @@ def scripted(session: BenchSession, commands: list[str], settle: float) -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="dispense.cpp menu over the framed protocol, for firmware/bench/dispense_UI.",
+        description="dispense.cpp menu over the framed protocol, for firmware/bench/dispense_UI and the production firmware.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=HELP,
     )
-    parser.add_argument("--port", default=DEFAULT_PORT)
+    parser.add_argument(
+        "--port", default=None,
+        help=f"default: ${PORT_ENV}, else {DEFAULT_PORTS[0]} if it exists, else {DEFAULT_PORTS[-1]}",
+    )
     parser.add_argument(
         "-c", "--command", action="append", default=[],
         help="run this menu command and exit (repeatable); without it the menu is interactive",
@@ -461,16 +623,22 @@ def main() -> int:
     parser.add_argument("--settle", type=float, default=0.5, help="pause between scripted commands, seconds")
     parser.add_argument("-v", "--verbose", action="store_true", help="also print raw received frames")
     parser.add_argument(
-        "--boot-wait", type=float, default=2.0,
-        help="seconds to wait after opening the port, in case it resets the MCU",
+        "--boot-wait", type=float, default=5.0,
+        help="seconds to wait after opening the port, in case it resets the MCU (production needs about 4 s)",
+    )
+    parser.add_argument(
+        "--expect-code", type=int, default=None, metavar="C",
+        help="a dispense (test, raw, busy, noise) passes when its result code is C, e.g. 2 for invalid requests",
     )
     args = parser.parse_args()
+    port = args.port or default_port()
 
     import serial  # imported here so the unit tests do not need pyserial
 
     try:
+        print(f"Opening {port} at {BAUD} 8N1", flush=True)
         with serial.Serial(
-            port=args.port,
+            port=port,
             baudrate=BAUD,
             timeout=0.05,
             write_timeout=1.0,
@@ -482,7 +650,7 @@ def main() -> int:
             dsrdtr=False,
         ) as connection:
             connection.reset_input_buffer()
-            session = BenchSession(connection, args.verbose)
+            session = BenchSession(connection, args.verbose, args.expect_code)
             session.start()
             time.sleep(args.boot_wait)
             try:

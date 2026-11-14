@@ -1,6 +1,7 @@
 """Deterministic tests for pi/tests/integration/bench_menu_frames.py (no serial port needed)."""
 
 import sys
+import time
 import unittest
 from pathlib import Path
 
@@ -61,8 +62,32 @@ class MenuMappingTests(unittest.TestCase):
         self.assertEqual(raw[:4], bytes.fromhex("AA 55 80 09"))
         self.assertEqual(len(raw), 9 + 5)
 
+    def test_liquid_test_is_slot_seven_in_ml(self):
+        command = bench.parse_menu_line("test 7 5", RID)
+        self.assertEqual(command.frame.payload, RID + bytes([7, 5]))
+        self.assertEqual(command.timeout, 50.0 + 2.0 * 5)
+        self.assertIn("mL 5", command.label)
+
+    def test_raw_sends_any_slot_and_quantity(self):
+        for line, slot, quantity in [("raw 0 1", 0, 1), ("raw 8 1", 8, 1), ("raw 1 0", 1, 0), ("raw 7 31", 7, 31)]:
+            with self.subTest(line=line):
+                command = bench.parse_menu_line(line, RID)
+                self.assertEqual(command.frame.msg_type, 0x10)
+                self.assertEqual(command.frame.payload, RID + bytes([slot, quantity]))
+        self.assertEqual(bench.parse_menu_line("raw 0 1", RID).timeout, 10.0)
+
+    def test_busy_and_noise_are_dispense_commands(self):
+        for word in ("busy", "noise"):
+            with self.subTest(word=word):
+                command = bench.parse_menu_line(f"{word} 2 3", RID)
+                self.assertEqual(command.frame.payload, RID + bytes([2, 3]))
+                self.assertEqual(command.timeout, 45.0 + 15.0 * 3)
+
     def test_invalid_lines_are_rejected(self):
-        for line in ["", "test", "test 0", "test 7", "test 1 0", "test 1 256", "7", "e -1", "e abc", "xyz", "w 2"]:
+        for line in [
+            "", "test", "test 0", "test 8", "test 1 0", "test 1 256", "test 1 x", "7", "e -1", "e abc",
+            "xyz", "w 2", "raw", "raw 1", "raw 256 1", "raw -1 1", "raw 1 1 1", "busy", "noise 8",
+        ]:
             with self.subTest(line=line):
                 with self.assertRaises(bench.MenuError):
                     bench.parse_menu_line(line, RID)
@@ -72,6 +97,24 @@ class MenuMappingTests(unittest.TestCase):
         three = bench.parse_menu_line("test 1 3", RID).timeout
         self.assertGreater(three, one)
         self.assertGreaterEqual(one, 30.0)  # a one-pill dispense can take about 30 s
+
+
+class PortAndNoiseTests(unittest.TestCase):
+    def test_port_env_wins_then_usb_then_gpio(self):
+        def exists(*present):
+            return lambda path: path in present
+
+        self.assertEqual(
+            bench.default_port({"PILLBA_UART_PORT": "/dev/serial/by-id/x"}, exists("/dev/ttyUSB0")),
+            "/dev/serial/by-id/x",
+        )
+        self.assertEqual(bench.default_port({}, exists("/dev/ttyUSB0", "/dev/serial0")), "/dev/ttyUSB0")
+        self.assertEqual(bench.default_port({}, exists("/dev/serial0")), "/dev/serial0")
+        self.assertEqual(bench.default_port({"PILLBA_UART_PORT": "  "}, exists()), "/dev/serial0")
+
+    def test_noise_never_starts_a_frame(self):
+        for _ in range(200):
+            self.assertNotIn(0xAA, bench.noise_bytes(64))
 
 
 class StreamSplitterTests(unittest.TestCase):
@@ -139,8 +182,15 @@ class DescribeTests(unittest.TestCase):
         self.assertTrue(bench.frame_succeeded(self.result(bench.CMD_READ_WEIGHT, 4, 0), w))
         self.assertFalse(bench.frame_succeeded(self.result(bench.CMD_READ_WEIGHT, 1, 0), w))
 
+    def test_expected_code_replaces_the_success_rule(self):
+        sent = bench.parse_menu_line("raw 0 1", RID).frame
+        invalid = Frame(0x11, RID + bytes([0, 2, 0]))
+        self.assertFalse(bench.frame_succeeded(invalid, sent))
+        self.assertTrue(bench.frame_succeeded(invalid, sent, expect_code=2))
+        self.assertFalse(bench.frame_succeeded(invalid, sent, expect_code=6))
+
     def test_help_lists_the_menu(self):
-        for word in ["test N", "stop", "pon", "e [grams]"]:
+        for word in ["test N", "raw S Q", "busy N", "noise N", "stop", "pon", "e [grams]"]:
             self.assertIn(word, bench.HELP)
 
 
@@ -181,6 +231,127 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(finish.payload[4], bench.CMD_CALIBRATE_FINISH)
         self.assertEqual(int.from_bytes(finish.payload[5:9], "little"), 10_000_000)
         self.assertNotEqual(start.payload[:4], finish.payload[:4])
+
+
+class FakeDispenser:
+    """A one-dispense-at-a-time MCU: holds a DISPENSE_CMD until finish() (or, with
+    auto_finish, until noise_needed noise bursts arrived), answers a second one BUSY."""
+
+    def __init__(self, code=0, auto_finish=False, noise_needed=0):
+        self.written = []
+        self.noise = []
+        self.in_waiting = 0
+        self.code = code
+        self.auto_finish = auto_finish
+        self.noise_needed = noise_needed
+        self.active = None
+        self._pending = b""
+
+    def _reply(self, payload, code, confirmed):
+        frame = Frame(0x11, payload[:4] + bytes([payload[4], code, confirmed]))
+        self._pending += encode_frame(frame.msg_type, frame.payload)
+
+    def finish(self):
+        if self.active is not None:
+            ok = self.code == 0
+            self._reply(self.active, self.code, self.active[5] if ok else 0)
+            self.active = None
+
+    def write(self, data):
+        data = bytes(data)
+        try:
+            frame = bench.decode_frame(data)
+        except ValueError:
+            self.noise.append(data)
+            if self.auto_finish and len(self.noise) >= self.noise_needed:
+                self.finish()
+            return
+        self.written.append(frame)
+        if self.active is None:
+            self.active = frame.payload
+            if self.auto_finish and self.noise_needed == 0:
+                self.finish()
+        else:
+            self._reply(frame.payload, 3, 0)  # BUSY
+            self.finish()  # then the first one completes
+
+    def flush(self):
+        pass
+
+    def read(self, size):
+        if not self._pending:
+            time.sleep(0.005)
+        data, self._pending = self._pending, b""
+        return data
+
+
+def make_session(connection, expect_code=None):
+    session = bench.BenchSession(connection, verbose=False, expect_code=expect_code)
+    session.busy_delay = 0.05
+    session.noise_interval = 0.01
+    session.extra_reply_wait = 0.1
+    session.start()
+    return session
+
+
+class DispenseSessionTests(unittest.TestCase):
+    def test_expect_code_makes_a_failure_pass(self):
+        for expect, passes in [(None, False), (6, True), (7, False)]:
+            with self.subTest(expect=expect):
+                session = make_session(FakeDispenser(code=6, auto_finish=True), expect_code=expect)
+                try:
+                    self.assertEqual(session.run_line("test 7 5"), passes)
+                finally:
+                    session.close()
+
+    def test_busy_expects_busy_for_the_second_then_the_first_result(self):
+        connection = FakeDispenser(code=0)
+        session = make_session(connection)
+        try:
+            self.assertTrue(session.run_line("busy 1"))
+        finally:
+            session.close()
+        first, second = connection.written
+        self.assertEqual(first.payload[4:], bytes([1, 1]))
+        self.assertEqual(second.payload[4:], bytes([1, 1]))
+        self.assertNotEqual(first.payload[:4], second.payload[:4])
+
+    def test_busy_fails_when_the_second_command_is_not_refused(self):
+        class NoBusy(FakeDispenser):
+            def write(self, data):
+                frame = bench.decode_frame(bytes(data))
+                self.written.append(frame)
+                self._reply(frame.payload, 0, frame.payload[5])  # answers everything OK
+
+        session = make_session(NoBusy())
+        try:
+            self.assertFalse(session.run_line("busy 1"))
+        finally:
+            session.close()
+
+    def test_noise_passes_with_exactly_one_reply(self):
+        connection = FakeDispenser(code=0, auto_finish=True, noise_needed=3)
+        session = make_session(connection)
+        try:
+            self.assertTrue(session.run_line("noise 2"))
+        finally:
+            session.close()
+        self.assertGreaterEqual(len(connection.noise), 3)
+        self.assertTrue(all(0xAA not in chunk for chunk in connection.noise))
+
+    def test_noise_fails_on_an_extra_reply(self):
+        class Chatty(FakeDispenser):
+            def finish(self):
+                if self.active is not None:
+                    payload = self.active
+                    super().finish()
+                    self._reply(payload, 3, 0)  # a spurious second reply
+
+        session = make_session(Chatty(code=0, auto_finish=True, noise_needed=2))
+        try:
+            self.assertFalse(session.run_line("noise 2"))
+        finally:
+            session.close()
 
 
 if __name__ == "__main__":

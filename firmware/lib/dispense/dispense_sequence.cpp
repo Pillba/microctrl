@@ -37,15 +37,38 @@ dispense::ResultCode DispenseSequence::run(uint8_t slot, uint8_t quantity, Dispe
 
     if (!scale_.ready()) return fail(dispense::RESULT_SCALE_NOT_RESPONDING, report);
 
-    // 1. shield closed, confirmed by the hall sensor
+    if (dispense::isLiquidSlot(slot)) return runLiquid(quantity, report);
+    return runPills(slot, quantity, report);
+}
+
+// 1. shield closed (confirmed by the hall sensor when fitted)  2. tare, so only this dispense is weighed
+void DispenseSequence::closeShieldAndTare(DispenseReport &report)
+{
     emit(DispenseEvent::SHIELD_CLOSING, report);
-    report.shieldConfirmed = shield_.move(false);
+    report.shieldConfirmed = shield_.move(false, board::SHIELD_WAIT_MS, hook_);
     emit(DispenseEvent::SHIELD_CLOSED, report);
 
-    // 2. tare, so only what this dispense drops is weighed
     emit(DispenseEvent::TARING, report);
     scale_.tare(board::AVERAGE_SCANS);
     emit(DispenseEvent::TARED, report);
+}
+
+// Everything checked: open the shield.
+dispense::ResultCode DispenseSequence::openShieldAndPass(DispenseReport &report)
+{
+    emit(DispenseEvent::SHIELD_OPENING, report);
+    report.shieldConfirmed = shield_.move(true, board::SHIELD_WAIT_MS, hook_);
+    emit(DispenseEvent::SHIELD_OPENED, report);
+
+    report.code = dispense::RESULT_OK;
+    report.confirmedQuantity = report.quantity;
+    emit(DispenseEvent::PASSED, report);
+    return dispense::RESULT_OK;
+}
+
+dispense::ResultCode DispenseSequence::runPills(uint8_t slot, uint8_t quantity, DispenseReport &report)
+{
+    closeShieldAndTare(report);
 
     // 3. stepper
     const unsigned long initialBreaks = ir_.breaks();
@@ -69,7 +92,7 @@ dispense::ResultCode DispenseSequence::run(uint8_t slot, uint8_t quantity, Dispe
     emit(DispenseEvent::WEIGHT_WAITING, report);
     if (!scale_.waitForWeight(board::WEIGHT_WAIT_MS, hook_))
         return fail(dispense::RESULT_NO_WEIGHT, report);
-    report.steady = scale_.steadyGrams(report.grams);
+    report.steady = scale_.steadyGrams(report.grams, hook_);
     emit(DispenseEvent::WEIGHT_MEASURED, report);
 
     report.expectedG = pillWeightG_ * quantity;
@@ -79,13 +102,67 @@ dispense::ResultCode DispenseSequence::run(uint8_t slot, uint8_t quantity, Dispe
         return fail(dispense::RESULT_WEIGHT_MISMATCH, report);
     emit(DispenseEvent::WEIGHT_MATCHED, report);
 
-    // 6. everything checked: open the shield
-    emit(DispenseEvent::SHIELD_OPENING, report);
-    report.shieldConfirmed = shield_.move(true);
-    emit(DispenseEvent::SHIELD_OPENED, report);
+    // 6. open the shield
+    return openShieldAndPass(report);
+}
 
-    report.code = dispense::RESULT_OK;
-    report.confirmedQuantity = quantity;
-    emit(DispenseEvent::PASSED, report);
-    return dispense::RESULT_OK;
+dispense::ResultCode DispenseSequence::pumpToWeight(uint8_t ml, DispenseReport &report)
+{
+    const uint32_t budgetMs = dispense::pumpBudgetMs(ml);
+    dispense::ResultCode outcome = dispense::RESULT_OK;
+    float grams = 0;
+    bool flowing = false;
+
+    const unsigned long start = millis();
+    pump_.set(true);
+    while (true)
+    {
+        if (hook_) hook_();
+        const unsigned long elapsed = millis() - start;
+        if (!scale_.tryGrams(grams))
+        {
+            outcome = dispense::RESULT_SCALE_NOT_RESPONDING;
+            break;
+        }
+        if (dispense::weightArrived(grams)) flowing = true;
+        if (grams >= report.expectedG) break;  // target reached
+        if (!flowing && elapsed >= dispense::LIQUID_PRIME_MS)
+        {
+            outcome = dispense::RESULT_NO_WEIGHT;  // dry reservoir or blocked tube
+            break;
+        }
+        if (elapsed >= budgetMs) break;  // too slow: the weighing below reports the shortfall
+    }
+    pump_.set(false);  // the only place the pump is switched off during a dispense: every exit passes here
+
+    report.pumpMs = millis() - start;
+    report.grams = grams;
+    emit(DispenseEvent::PUMPED, report);
+    return outcome;
+}
+
+dispense::ResultCode DispenseSequence::runLiquid(uint8_t ml, DispenseReport &report)
+{
+    closeShieldAndTare(report);
+
+    // 3. pump into the weighed cup
+    report.expectedG = dispense::liquidTargetG(ml);
+    report.toleranceG = dispense::liquidTolerance(report.expectedG);
+    emit(DispenseEvent::PUMPING, report);
+    const dispense::ResultCode pumped = pumpToWeight(ml, report);
+    if (pumped != dispense::RESULT_OK) return fail(pumped, report);
+
+    // 4. let the tube drip, then the weight must settle and match
+    pollFor(board::LIQUID_DRIP_MS);
+    emit(DispenseEvent::WEIGHT_WAITING, report);
+    report.steady = scale_.steadyGrams(report.grams, hook_);
+    emit(DispenseEvent::WEIGHT_MEASURED, report);
+
+    emit(DispenseEvent::WEIGHT_COMPARING, report);
+    if (!dispense::liquidMatches(report.grams, report.expectedG))
+        return fail(dispense::RESULT_WEIGHT_MISMATCH, report);
+    emit(DispenseEvent::WEIGHT_MATCHED, report);
+
+    // 5. open the shield
+    return openShieldAndPass(report);
 }

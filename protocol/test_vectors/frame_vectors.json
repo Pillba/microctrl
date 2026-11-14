@@ -10,5 +10,29 @@
     "message_type": "0x11",
     "payload_hex": "01020304030002",
     "encoded_hex": "aa5511070102030403000285"
+  },
+  {
+    "name": "liquid dispense command example, slot 7, 5 mL",
+    "message_type": "0x10",
+    "payload_hex": "010203040705",
+    "encoded_hex": "aa55100601020304070529"
+  },
+  {
+    "name": "calibrate start command example",
+    "message_type": "0x80",
+    "payload_hex": "010203040800000000",
+    "encoded_hex": "aa55800901020304080000000008"
+  },
+  {
+    "name": "calibrate finish command example, 2 g",
+    "message_type": "0x80",
+    "payload_hex": "010203040980841e00",
+    "encoded_hex": "aa558009010203040980841e00d0"
+  },
+  {
+    "name": "calibrate finish result example, factor 420.00",
+    "message_type": "0x81",
+    "payload_hex": "01020304090010a40000",
+    "encoded_hex": "aa55810a01020304090010a40000ab"
   }
 ]
