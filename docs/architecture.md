@@ -16,18 +16,13 @@ are preserved under `archive/` and are not production dependencies.
 microctrl/
 ├── firmware/
 │   ├── platformio.ini
-│   ├── src/
-│   │   ├── main.cpp
-│   │   └── subsystems/
-│   │       ├── configuration/
-│   │       ├── uart_protocol/
-│   │       ├── stepper/
-│   │       ├── servo/
-│   │       ├── pump/
-│   │       ├── load_cell/
-│   │       ├── ir_break_beam/
-│   │       └── hall_sensor/
-│   └── test/
+│   ├── lib/                  board, stepper_bank, shield, ir_beam, scale, pump,
+│   │                         dispense, dispense_rules, protocol
+│   ├── src/apps/
+│   │   ├── production/       framed UART app
+│   │   └── bench_console/    plain-text bench app
+│   ├── test/
+│   └── bench/                frozen reference sketches
 ├── pi/
 │   ├── src/
 │   │   ├── main.py
@@ -46,9 +41,12 @@ microctrl/
     └── legacy/
 ```
 
-Each firmware subsystem owns a matching header and implementation file. The
-firmware `main.cpp` orchestrates subsystems; it does not contain their driver
-logic. Pi code does not control hardware pins directly.
+Each firmware driver is a PlatformIO library under `firmware/lib/` with a
+matching header and implementation file, taken from the hardware-validated
+`firmware/bench/dispense/` sketch. Apps under `firmware/src/apps/` own the UART
+and only wire drivers together; drivers never print. See
+[`../firmware/README.md`](../firmware/README.md). Pi code does not control
+hardware pins directly.
 
 The existing sibling project at
 `/Users/Owner/workspace-school/sd1/panel-ui/` is the current Pi application

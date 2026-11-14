@@ -1,0 +1,3 @@
+; Copy to platformio_override.ini (gitignored) to set your own programmer port.
+[pcb]
+upload_port = /dev/cu.usbserial-1140

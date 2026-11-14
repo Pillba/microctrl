@@ -4,5 +4,11 @@
     "message_type": "0x10",
     "payload_hex": "010203040203",
     "encoded_hex": "aa5510060102030402030b"
+  },
+  {
+    "name": "dispense result example",
+    "message_type": "0x11",
+    "payload_hex": "01020304030002",
+    "encoded_hex": "aa5511070102030403000285"
   }
 ]

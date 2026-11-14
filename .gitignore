@@ -5,4 +5,4 @@ __pycache__/
 *.py[cod]
 venv/
 .venv/
-*.sqlite3
+*.sqlite3firmware/platformio_override.ini
