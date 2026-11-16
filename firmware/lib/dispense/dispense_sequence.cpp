@@ -1,5 +1,22 @@
 #include "dispense_sequence.h"
 
+namespace
+{
+// Stop condition for StepperBank::run: the beam has counted every requested pill.
+struct BreakTarget
+{
+    const IrBeam *ir;
+    unsigned long initialBreaks;
+    uint8_t quantity;
+};
+
+bool beamCountReached(void *context)
+{
+    const BreakTarget &target = *static_cast<const BreakTarget *>(context);
+    return target.ir->breaks() - target.initialBreaks >= target.quantity;
+}
+}  // namespace
+
 void DispenseSequence::emit(DispenseEvent event, const DispenseReport &report)
 {
     if (listener_) listener_(event, report);
@@ -28,11 +45,13 @@ void DispenseSequence::pollFor(unsigned long ms)
     }
 }
 
-dispense::ResultCode DispenseSequence::run(uint8_t slot, uint8_t quantity, DispenseReport &report)
+dispense::ResultCode DispenseSequence::run(uint8_t slot, uint8_t quantity, DispenseReport &report, float unitG)
 {
     report = DispenseReport();
     report.slot = slot;
     report.quantity = quantity;
+    if (unitG > 0) report.unitG = unitG;
+    else report.unitG = dispense::isLiquidSlot(slot) ? dispense::DEFAULT_LIQUID_G_PER_ML : pillWeightG_;
     emit(DispenseEvent::STARTED, report);
 
     if (!scale_.ready()) return fail(dispense::RESULT_SCALE_NOT_RESPONDING, report);
@@ -70,10 +89,12 @@ dispense::ResultCode DispenseSequence::runPills(uint8_t slot, uint8_t quantity, 
 {
     closeShieldAndTare(report);
 
-    // 3. stepper
-    const unsigned long initialBreaks = ir_.breaks();
+    // 3. stepper: until the beam has counted every pill, or the step limit
+    BreakTarget target{&ir_, ir_.breaks(), quantity};
+    const unsigned long initialBreaks = target.initialBreaks;
+    report.steps = (uint32_t)board::STEPS_PER_PILL * board::MAX_STEP_TURNS * quantity;
     emit(DispenseEvent::STEPPING, report);
-    steppers_.run(slot, (uint32_t)board::STEPS_PER_PILL * quantity, hook_);
+    report.steps = steppers_.run(slot, report.steps, hook_, beamCountReached, &target);
     emit(DispenseEvent::STEPPED, report);
 
     // 4. IR break beam
@@ -95,7 +116,7 @@ dispense::ResultCode DispenseSequence::runPills(uint8_t slot, uint8_t quantity, 
     report.steady = scale_.steadyGrams(report.grams, hook_);
     emit(DispenseEvent::WEIGHT_MEASURED, report);
 
-    report.expectedG = pillWeightG_ * quantity;
+    report.expectedG = report.unitG * quantity;
     report.toleranceG = dispense::weightTolerance(report.expectedG);
     emit(DispenseEvent::WEIGHT_COMPARING, report);
     if (!dispense::weightMatches(report.grams, report.expectedG))
@@ -146,7 +167,7 @@ dispense::ResultCode DispenseSequence::runLiquid(uint8_t ml, DispenseReport &rep
     closeShieldAndTare(report);
 
     // 3. pump into the weighed cup
-    report.expectedG = dispense::liquidTargetG(ml);
+    report.expectedG = dispense::liquidTargetG(ml, report.unitG);
     report.toleranceG = dispense::liquidTolerance(report.expectedG);
     emit(DispenseEvent::PUMPING, report);
     const dispense::ResultCode pumped = pumpToWeight(ml, report);

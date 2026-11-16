@@ -43,6 +43,9 @@ constexpr uint8_t LOAD_CELL_SCK_PIN = 11;
 
 // Stepper timing
 constexpr uint16_t STEPS_PER_PILL = 1000;
+// A dispense steps until the IR beam has counted every pill, but at most this many times
+// STEPS_PER_PILL per pill (3 -> 3000 steps, 6 s, for one pill); then IR_NOT_TRIPPED.
+constexpr uint8_t MAX_STEP_TURNS = 3;
 constexpr uint16_t STEP_PERIOD_US = 2000;
 constexpr uint16_t STEP_PULSE_US = 20;
 constexpr uint8_t STEPPER_ENABLE_SETTLE_MS = 5;

@@ -26,6 +26,7 @@ enum MessageType : uint8_t
 
 constexpr uint8_t REQUEST_ID_LENGTH = 4;
 constexpr uint8_t DISPENSE_CMD_LENGTH = 6;     // request_id[4] slot quantity
+constexpr uint8_t DISPENSE_CMD_WEIGHT_LENGTH = 8;  // ... + unit_weight_mg[2, uint16 LE] (0 = firmware default)
 constexpr uint8_t DISPENSE_RESULT_LENGTH = 7;  // request_id[4] slot result_code confirmed_quantity
 constexpr uint8_t BENCH_CMD_LENGTH = 9;        // request_id[4] command arg[4, uint32 LE]
 constexpr uint8_t BENCH_RESULT_LENGTH = 10;    // request_id[4] command status value[4, int32 LE]
@@ -81,9 +82,13 @@ struct DispenseCommand
     uint8_t requestId[REQUEST_ID_LENGTH];
     uint8_t slot;
     uint8_t quantity;
+    // Weight of one unit in milligrams: one pill (slots 1-6) or one mL (slot 7). 0 = the firmware's
+    // default (dispense::DEFAULT_PILL_WEIGHT_G / DEFAULT_LIQUID_G_PER_ML). A 6-byte DISPENSE_CMD has none.
+    uint16_t unitMg;
 };
 
-// Copies the payload out of the frame. False if it is not a well-formed DISPENSE_CMD.
+// Copies the payload out of the frame. False if it is not a well-formed DISPENSE_CMD (6 bytes, or
+// 8 bytes with unit_weight_mg).
 bool decodeDispenseCommand(const Frame &frame, DispenseCommand &command);
 
 // Writes a complete DISPENSE_RESULT frame into out (needs 12 bytes). Returns the frame length.

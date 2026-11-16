@@ -1,9 +1,10 @@
 // Pillba production firmware for the ATmega328P PCB: framed UART (protocol/protocol.md) at 115200.
 //
-// DISPENSE_CMD (request_id[4] slot quantity) runs one verified dispense and is answered with
+// DISPENSE_CMD (request_id[4] slot quantity [unit_weight_mg]) runs one verified dispense and is answered with
 // DISPENSE_RESULT (request_id[4] slot result_code confirmed_quantity). Slots 1-6 are pill steppers;
 // slot 7 is the liquid pump and its quantity is mL. While a dispense runs, further commands are
-// answered with BUSY right away. Only frames are written to the UART.
+// answered with BUSY right away. Only frames are written to the UART, unless the firmware was built
+// with DEBUG=1 (debug_log.h): then "DBG ..." progress lines are written between frames too.
 //
 // Scale calibration (the panel's Calibrate Scale page, or bench_menu_frames.py "c") uses two BENCH_CMD
 // commands with the same payloads as firmware/bench/dispense_UI:
@@ -27,6 +28,8 @@
 #include <scale.h>
 #include <shield.h>
 #include <stepper_bank.h>
+
+#include "debug_log.h"
 
 namespace
 {
@@ -81,7 +84,9 @@ void sendBenchResult(const protocol::BenchCommand &command, uint8_t status, int3
 void handleFrame(const protocol::Frame &frame)
 {
     protocol::BenchCommand bench;
-    switch (protocol::decideCalibration(frame, calibrationBusy(), bench))
+    const protocol::DispatchDecision calibration = protocol::decideCalibration(frame, calibrationBusy(), bench);
+    if (calibration != protocol::DISPATCH_IGNORE) debug_log::calibrationCommand(bench, calibration);
+    switch (calibration)
     {
     case protocol::DISPATCH_REJECT_BUSY:
         sendBenchResult(bench, protocol::BENCH_STATUS_BUSY, 0);
@@ -95,7 +100,10 @@ void handleFrame(const protocol::Frame &frame)
     }
 
     protocol::DispenseCommand command;
-    switch (protocol::decideDispense(frame, dispenseBusy(), command))
+    const protocol::DispatchDecision decision = protocol::decideDispense(frame, dispenseBusy(), command);
+    if (decision == protocol::DISPATCH_IGNORE) debug_log::ignoredFrame(frame);
+    else debug_log::dispenseCommand(command, decision);
+    switch (decision)
     {
     case protocol::DISPATCH_IGNORE:
         break;
@@ -131,7 +139,9 @@ void runPending()
     hasPending = false;
     dispensing = true;
     DispenseReport report;
-    const dispense::ResultCode code = dispenser.run(command.slot, command.quantity, report);
+    const dispense::ResultCode code =
+        dispenser.run(command.slot, command.quantity, report, command.unitMg / 1000.0f);
+    debug_log::dispenseResult(command, code, report.confirmedQuantity);
     sendDispenseResult(command, code, report.confirmedQuantity);
     dispensing = false;
 }
@@ -169,6 +179,7 @@ void runPendingCalibration()
             endCalibrationSession();
             status = protocol::BENCH_STATUS_FAILED;
         }
+        debug_log::calibrationResult(command, status, factorX100());
         sendBenchResult(command, status, 0);
         return;
     }
@@ -205,6 +216,7 @@ void runPendingCalibration()
             break;
         }
     }
+    debug_log::calibrationResult(command, status, factorX100());
     sendBenchResult(command, status, factorX100());
 }
 } // namespace
@@ -216,9 +228,11 @@ void setup()
     pump.begin();
     steppers.begin();
     shield.begin();
-    scale.begin();  // if the HX711 is missing, every dispense reports SCALE_NOT_RESPONDING
+    const bool scaleReady = scale.begin();  // if the HX711 is missing, every dispense reports SCALE_NOT_RESPONDING
     ir.begin();
     dispenser.setPollHook(poll);
+    if (PILLBA_DEBUG_LOG) dispenser.setListener(debug_log::dispenseEvent);
+    debug_log::boot(scaleReady, scale.calibrated(), scale.factor());
 }
 
 void loop()
@@ -228,5 +242,8 @@ void loop()
     else if (hasPending) runPending();
 
     if (calibrationStarted && millis() - calibrationStartedAt >= CALIBRATION_IDLE_MS)
+    {
         endCalibrationSession();  // the panel went away mid-session: back to the saved factor
+        debug_log::calibrationExpired();
+    }
 }

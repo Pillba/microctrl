@@ -152,12 +152,16 @@ void onDispenseEvent(DispenseEvent event, const DispenseReport &report)
     case DispenseEvent::STEPPING:
         CONSOLE.print(F("TEST: Running stepper "));
         CONSOLE.print(report.slot);
-        CONSOLE.print(F(" for "));
-        CONSOLE.print((uint32_t)board::STEPS_PER_PILL * report.quantity);
-        CONSOLE.println(F(" steps..."));
+        CONSOLE.print(F(" until the IR beam counts "));
+        CONSOLE.print(report.quantity);
+        CONSOLE.print(F(" (at most "));
+        CONSOLE.print(report.steps);
+        CONSOLE.println(F(" steps)..."));
         break;
     case DispenseEvent::STEPPED:
-        CONSOLE.println(F("VERIFY: Stepper finished."));
+        CONSOLE.print(F("VERIFY: Stepper stopped after "));
+        CONSOLE.print(report.steps);
+        CONSOLE.println(F(" steps."));
         break;
     case DispenseEvent::IR_CHECKING:
         CONSOLE.println(F("TEST: Checking IR break beam..."));

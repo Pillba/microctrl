@@ -32,7 +32,7 @@ contributors' approval and a documented migration decision.
 | --- | --- | --- | --- |
 | `0x01` | `HEARTBEAT` | MCU → Pi | request ID + device status |
 | `0x02` | `HEARTBEAT_ACK` | Pi → MCU | request ID |
-| `0x10` | `DISPENSE_CMD` | Pi → MCU | request ID, slot, quantity |
+| `0x10` | `DISPENSE_CMD` | Pi → MCU | request ID, slot, quantity, optional unit weight (mg) |
 | `0x11` | `DISPENSE_RESULT` | MCU → Pi | request ID, slot, result code, confirmed quantity |
 | `0x20` | `SCHEDULE_SET` | Pi → MCU | request ID, slot, time, days, active |
 | `0x21` | `SCHEDULE_ACK` | MCU → Pi | request ID, slot, result |
@@ -50,19 +50,29 @@ vectors when their production payloads are approved.
 ## Dispense payloads
 
 ```text
-DISPENSE_CMD: request_id[4] + slot[1] + quantity[1]
+DISPENSE_CMD: request_id[4] + slot[1] + quantity[1]                          (6 bytes)
+DISPENSE_CMD: request_id[4] + slot[1] + quantity[1] + unit_weight_mg[2]      (8 bytes)
 DISPENSE_RESULT: request_id[4] + slot[1] + result_code[1] + confirmed_quantity[1]
 ```
+
+`unit_weight_mg` (uint16, little-endian) is the weight of one unit in
+milligrams: one pill for slots 1–6, one mL for slot 7 (650 = 0.65 g per pill,
+1030 = 1.03 g/mL). `0`, or the 6-byte form, means "use the firmware's
+default" (0.95 g per pill, 1.00 g/mL). The MCU accepts both lengths, so a Pi
+and an MCU can be updated one at a time; the Pi sends the 6-byte form when a
+medication has no weight set. Any other payload length gets no reply.
 
 The MCU implementation is the `production` app in `firmware/` (codec in
 `firmware/lib/protocol/`, sequence in `firmware/lib/dispense/`).
 
-- **Slots 1–6 (pills), quantity = pills.** The MCU runs `1000 × quantity` steps
-  on the slot, requires the break-beam count to reach the quantity, and checks
-  the settled weight against the expected per-pill weight (0.95 g) multiplied
-  by the quantity (±15 %, at least 0.030 g).
+- **Slots 1–6 (pills), quantity = pills.** The MCU steps the slot until the
+  break beam has counted `quantity` pills, at most `3 × 1000 × quantity` steps
+  (6 s per pill), requires the break-beam count to reach the quantity, and checks
+  the settled weight against the per-pill weight (`unit_weight_mg`, or 0.95 g)
+  multiplied by the quantity (±45 %, at least 0.030 g).
 - **Slot 7 (liquid), quantity = whole mL, 1–30.** The pump fills the same
-  weighed cup behind the shield until it gains `mL × 1.00 g/mL`. If nothing
+  weighed cup behind the shield until it gains `mL × unit weight` (default
+  1.00 g/mL). If nothing
   reaches the cup within 5 s the pump stops (`NO_WEIGHT`); it never runs longer
   than `5 s + 2 s × mL`. After a 1 s drip the settled weight must match within
   ±10 % (at least 0.5 g). The break beam is not used. The 30 mL cap protects
@@ -75,7 +85,7 @@ and the weight; only the 2 s tare does not) when a command arrives during a
 dispense or a scale calibration session (see "Scale calibration"). A command
 with a bad slot (outside 1–7), a quantity of 0, or more than 30 mL for slot 7
 is answered with `INVALID_REQUEST`. A frame of another type, or a
-`DISPENSE_CMD` with the wrong payload length, gets no reply.
+`DISPENSE_CMD` whose payload is not 6 or 8 bytes, gets no reply.
 
 `confirmed_quantity` equals the requested quantity (pills or mL) on `OK` and is
 0 otherwise.
@@ -106,8 +116,8 @@ the pump is off).
 Worst cases on the MCU, with the hall sensors fitted (without them each shield
 move takes 0.7 s instead of up to 4.3 s):
 
-- pills: about 41 s + 2 s per pill (scale check 1 s, shield 4.3 s, tare 2 s,
-  steps 2 s per pill, IR 5.2 s, weight 5 s, settling 15 s + 2 s, shield 4.3 s);
+- pills: about 41 s + 6 s per pill (scale check 1 s, shield 4.3 s, tare 2 s,
+  steps up to 6 s per pill, IR 5.2 s, weight 5 s, settling 15 s + 2 s, shield 4.3 s);
 - liquid: about 30 s + the pump budget of 5 s + 2 s per mL.
 
 The Pi's response timeout must be `45 s + 15 s × quantity` for pills and
@@ -116,8 +126,9 @@ outcome is `UNKNOWN` (see below). The liquid pump budget and the Pi's liquid
 timeout must change together.
 
 **Pending approval by both contributors** (see "Frame" above): result codes
-4–7, slot 7 (liquid, quantity in mL, the 30 mL cap), and the scale calibration
-commands below.
+4–7, slot 7 (liquid, quantity in mL, the 30 mL cap), the scale calibration
+commands below, and the 8-byte `DISPENSE_CMD` with `unit_weight_mg` (additive:
+the 6-byte form keeps its meaning).
 
 Medication records and schedules remain Pi-owned. The MCU receives commands
 and reports hardware outcomes; it is not the medication database.
@@ -178,7 +189,9 @@ Events: `0x01` PLAY_SOUND (value: sound number), `0x02` HALL (0 between,
 1 closed, 2 open, 3 both sensors), `0x03` READY (bit 0 scale calibrated,
 bit 1 clear beam reads HIGH). Dispense progress is still logged as plain ASCII
 text lines between frames; ASCII never contains `0xAA`, so the Pi can split
-the stream.
+the stream. The production firmware writes only frames, except in a `DEBUG=1`
+build (firmware/README.md), which adds `DBG ...` text lines between frames in
+the same way. Receivers must skip bytes outside frames.
 
 ## Request IDs and failure semantics
 

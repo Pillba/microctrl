@@ -6,6 +6,12 @@
     "encoded_hex": "aa5510060102030402030b"
   },
   {
+    "name": "dispense command with unit weight, slot 1, 2 pills, 650 mg each",
+    "message_type": "0x10",
+    "payload_hex": "0102030401028a02",
+    "encoded_hex": "aa5510080102030401028a02da"
+  },
+  {
     "name": "dispense result example",
     "message_type": "0x11",
     "payload_hex": "01020304030002",
@@ -16,6 +22,12 @@
     "message_type": "0x10",
     "payload_hex": "010203040705",
     "encoded_hex": "aa55100601020304070529"
+  },
+  {
+    "name": "liquid dispense command with unit weight, slot 7, 5 mL, 1030 mg per mL",
+    "message_type": "0x10",
+    "payload_hex": "0102030407050604",
+    "encoded_hex": "aa551008010203040705060416"
   },
   {
     "name": "calibrate start command example",

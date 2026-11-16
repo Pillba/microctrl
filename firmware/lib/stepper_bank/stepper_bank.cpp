@@ -35,7 +35,7 @@ void StepperBank::enable(uint8_t slot)
     if (slot >= 1 && slot <= board::STEPPER_COUNT) digitalWrite(ENABLE_PINS[slot - 1], LOW);
 }
 
-uint32_t StepperBank::run(uint8_t slot, uint32_t steps, PollHook hook)
+uint32_t StepperBank::run(uint8_t slot, uint32_t steps, PollHook hook, StopCondition stop, void *context)
 {
     enable(slot);
     delay(board::STEPPER_ENABLE_SETTLE_MS);
@@ -49,6 +49,7 @@ uint32_t StepperBank::run(uint8_t slot, uint32_t steps, PollHook hook)
         digitalWrite(board::STEP_PIN, LOW);
         delayMicroseconds(board::STEP_PERIOD_US - board::STEP_PULSE_US);
         taken++;
+        if (stop && stop(context)) break;
 
         if (hook && untilPoll-- == 0)
         {

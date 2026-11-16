@@ -8,24 +8,28 @@ using namespace dispense;
 
 void test_tolerance_is_percent_of_expected()
 {
-    TEST_ASSERT_FLOAT_WITHIN(1e-5, 0.1425, weightTolerance(0.95));
-    TEST_ASSERT_FLOAT_WITHIN(1e-5, 0.285, weightTolerance(1.90));  // quantity 2
+    TEST_ASSERT_FLOAT_WITHIN(1e-5, 0.4275, weightTolerance(0.95));  // 45 %
+    TEST_ASSERT_FLOAT_WITHIN(1e-5, 0.855, weightTolerance(1.90));   // quantity 2
+    TEST_ASSERT_FLOAT_WITHIN(1e-5, 0.18, weightTolerance(0.40));
 }
 
 void test_tolerance_has_a_floor()
 {
-    TEST_ASSERT_FLOAT_WITHIN(1e-6, WEIGHT_TOLERANCE_MIN_G, weightTolerance(0.146));
+    TEST_ASSERT_FLOAT_WITHIN(1e-6, WEIGHT_TOLERANCE_MIN_G, weightTolerance(0.06));
     TEST_ASSERT_FLOAT_WITHIN(1e-6, WEIGHT_TOLERANCE_MIN_G, weightTolerance(0.0));
 }
 
 void test_weight_matches_inside_band_only()
 {
-    TEST_ASSERT_TRUE(weightMatches(0.95, 0.95));
-    TEST_ASSERT_TRUE(weightMatches(0.95 + 0.14, 0.95));
-    TEST_ASSERT_TRUE(weightMatches(0.95 - 0.14, 0.95));
-    TEST_ASSERT_FALSE(weightMatches(0.95 + 0.15, 0.95));
-    TEST_ASSERT_FALSE(weightMatches(0.95 - 0.15, 0.95));
+    TEST_ASSERT_TRUE(weightMatches(0.40, 0.40));
+    TEST_ASSERT_TRUE(weightMatches(0.58, 0.40));   // exactly +45 %
+    TEST_ASSERT_TRUE(weightMatches(0.22, 0.40));   // exactly -45 %
+    TEST_ASSERT_FALSE(weightMatches(0.59, 0.40));
+    TEST_ASSERT_FALSE(weightMatches(0.21, 0.40));
+    TEST_ASSERT_TRUE(weightMatches(0.95 + 0.42, 0.95));
+    TEST_ASSERT_FALSE(weightMatches(0.95 + 0.44, 0.95));
     TEST_ASSERT_FALSE(weightMatches(0.95, 1.90));  // one pill when two were requested
+    TEST_ASSERT_FALSE(weightMatches(0.95 * 3, 0.95 * 2));  // one extra pill on two
 }
 
 void test_weight_arrived_threshold()

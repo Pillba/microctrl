@@ -49,6 +49,22 @@ pio run  -d firmware -e production -t upload --upload-port /dev/cu.usbserial-XXX
 To avoid passing `--upload-port`, copy `platformio_override.ini.example` to
 `platformio_override.ini` (gitignored) and set your port there.
 
+## Debug build: progress lines from production
+
+Production normally writes only frames. Build it with `DEBUG=1` to add plain
+`DBG ...` text lines between frames: each command received and what was decided
+(accepted, BUSY, INVALID, ignored bench command), every dispense step (shield,
+tare, steps, IR breaks, weight), and each result sent.
+
+```bash
+DEBUG=1 pio run -d firmware -e production -t upload    # debug build (a compile warning says so)
+pio run -d firmware -e production -t upload            # normal build again
+```
+
+`bench_menu_frames.py` shows the lines as `MCU> DBG ...`; the panel's parser skips
+them. The debug build is about 3.6 KB bigger and printing adds a few ms per step,
+so upload a normal build before regular use.
+
 ## Keep the calibration across flashes: program EESAVE once per board
 
 The scale calibration factor lives in EEPROM (`lib/board/board.h`, EEPROM

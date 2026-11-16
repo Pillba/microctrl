@@ -29,6 +29,34 @@ void test_valid_command_is_accepted_and_copied()
     TEST_ASSERT_EQUAL(2, command.quantity);
 }
 
+void test_six_byte_command_has_no_unit_weight()
+{
+    const uint8_t payload[6] = {1, 2, 3, 4, 1, 2};
+    DispenseCommand command;
+    command.unitMg = 999;
+    TEST_ASSERT_EQUAL(DISPATCH_ACCEPT, decideDispense(makeFrame(MSG_DISPENSE_CMD, payload, 6), false, command));
+    TEST_ASSERT_EQUAL_UINT16(0, command.unitMg);  // 0 = firmware default
+}
+
+void test_eight_byte_command_carries_unit_weight()
+{
+    // protocol/test_vectors/frame_vectors.json "dispense command with unit weight, slot 1, 2 pills, 650 mg each"
+    const uint8_t pills[8] = {1, 2, 3, 4, 1, 2, 0x8A, 0x02};
+    DispenseCommand command;
+    TEST_ASSERT_EQUAL(DISPATCH_ACCEPT, decideDispense(makeFrame(MSG_DISPENSE_CMD, pills, 8), false, command));
+    TEST_ASSERT_EQUAL(1, command.slot);
+    TEST_ASSERT_EQUAL(2, command.quantity);
+    TEST_ASSERT_EQUAL_UINT16(650, command.unitMg);
+
+    const uint8_t liquid[8] = {1, 2, 3, 4, 7, 5, 0x06, 0x04};  // 1030 mg per mL
+    TEST_ASSERT_EQUAL(DISPATCH_ACCEPT, decideDispense(makeFrame(MSG_DISPENSE_CMD, liquid, 8), false, command));
+    TEST_ASSERT_EQUAL_UINT16(1030, command.unitMg);
+
+    const uint8_t badSlot[8] = {1, 2, 3, 4, 8, 1, 0x8A, 0x02};
+    TEST_ASSERT_EQUAL(DISPATCH_REJECT_INVALID, decideDispense(makeFrame(MSG_DISPENSE_CMD, badSlot, 8), false, command));
+    TEST_ASSERT_EQUAL(DISPATCH_REJECT_BUSY, decideDispense(makeFrame(MSG_DISPENSE_CMD, pills, 8), true, command));
+}
+
 void test_busy_rejects_valid_command()
 {
     const uint8_t payload[6] = {1, 2, 3, 4, 6, 1};
@@ -66,6 +94,8 @@ void test_other_messages_and_wrong_length_are_ignored()
     TEST_ASSERT_EQUAL(DISPATCH_IGNORE, decideDispense(makeFrame(MSG_DISPENSE_RESULT, payload, 7), false, command));
     TEST_ASSERT_EQUAL(DISPATCH_IGNORE, decideDispense(makeFrame(MSG_DISPENSE_CMD, payload, 7), false, command));
     TEST_ASSERT_EQUAL(DISPATCH_IGNORE, decideDispense(makeFrame(MSG_DISPENSE_CMD, payload, 5), false, command));
+    const uint8_t nine[9] = {1, 2, 3, 4, 1, 1, 0, 0, 0};
+    TEST_ASSERT_EQUAL(DISPATCH_IGNORE, decideDispense(makeFrame(MSG_DISPENSE_CMD, nine, 9), false, command));
 }
 
 void test_result_frame_matches_shared_vector()
@@ -134,6 +164,8 @@ int main()
 {
     UNITY_BEGIN();
     RUN_TEST(test_valid_command_is_accepted_and_copied);
+    RUN_TEST(test_six_byte_command_has_no_unit_weight);
+    RUN_TEST(test_eight_byte_command_carries_unit_weight);
     RUN_TEST(test_busy_rejects_valid_command);
     RUN_TEST(test_invalid_slot_or_quantity_is_rejected_even_when_busy);
     RUN_TEST(test_liquid_slot_is_accepted);

@@ -62,6 +62,23 @@ class MenuMappingTests(unittest.TestCase):
         self.assertEqual(raw[:4], bytes.fromhex("AA 55 80 09"))
         self.assertEqual(len(raw), 9 + 5)
 
+    def test_unit_weight_makes_an_eight_byte_command(self):
+        # protocol/test_vectors/frame_vectors.json "dispense command with unit weight, slot 1, 2 pills, 650 mg each"
+        frame = bench.parse_menu_line("test 1 2 0.65", bytes.fromhex("01020304")).frame
+        self.assertEqual(encode_frame(frame.msg_type, frame.payload).hex(), "aa5510080102030401028a02da")
+        liquid = bench.parse_menu_line("test 7 5 1.03", bytes.fromhex("01020304")).frame
+        self.assertEqual(encode_frame(liquid.msg_type, liquid.payload).hex(), "aa551008010203040705060416")
+
+    def test_without_unit_weight_the_command_stays_six_bytes(self):
+        for line in ("test 1", "test 1 2", "raw 0 1", "busy 1 2", "noise 1"):
+            self.assertEqual(len(bench.parse_menu_line(line, RID).frame.payload), 6, line)
+        self.assertEqual(len(bench.parse_menu_line("raw 1 1 0.4", RID).frame.payload), 8)
+
+    def test_unit_weight_must_fit_sixteen_bits(self):
+        for line in ("test 1 1 0", "test 1 1 66", "test 1 1 abc", "test 1 1 -1", "test 1 1 0.4 9"):
+            with self.subTest(line=line), self.assertRaises(bench.MenuError):
+                bench.parse_menu_line(line, RID)
+
     def test_liquid_test_is_slot_seven_in_ml(self):
         command = bench.parse_menu_line("test 7 5", RID)
         self.assertEqual(command.frame.payload, RID + bytes([7, 5]))
@@ -86,7 +103,7 @@ class MenuMappingTests(unittest.TestCase):
     def test_invalid_lines_are_rejected(self):
         for line in [
             "", "test", "test 0", "test 8", "test 1 0", "test 1 256", "test 1 x", "7", "e -1", "e abc",
-            "xyz", "w 2", "raw", "raw 1", "raw 256 1", "raw -1 1", "raw 1 1 1", "busy", "noise 8",
+            "xyz", "w 2", "raw", "raw 1", "raw 256 1", "raw -1 1", "raw 1 1 1 1", "raw 1 1 0", "busy", "noise 8",
         ]:
             with self.subTest(line=line):
                 with self.assertRaises(bench.MenuError):
@@ -188,6 +205,40 @@ class DescribeTests(unittest.TestCase):
         self.assertFalse(bench.frame_succeeded(invalid, sent))
         self.assertTrue(bench.frame_succeeded(invalid, sent, expect_code=2))
         self.assertFalse(bench.frame_succeeded(invalid, sent, expect_code=6))
+
+    def test_no_answer_hint_names_bench_only_commands(self):
+        for line in ["1", "9", "w", "pon", "stop"]:
+            with self.subTest(line=line):
+                hint = bench.no_answer_hint(bench.parse_menu_line(line, RID).frame)
+                self.assertIn("production firmware ignores", hint)
+                self.assertIn("dispense_UI", hint)
+        self.assertIn("STEPPER_LOOP", bench.no_answer_hint(bench.parse_menu_line("1", RID).frame))
+
+    def test_no_answer_hint_stays_quiet_for_production_commands(self):
+        for line in ["test 1", "raw 0 1"]:
+            self.assertIsNone(bench.no_answer_hint(bench.parse_menu_line(line, RID).frame))
+        for command in (bench.CMD_CALIBRATE_START, bench.CMD_CALIBRATE_FINISH):
+            self.assertIsNone(bench.no_answer_hint(bench.bench_frame(RID, command)))
+
+    def test_production_debug_lines_are_text_not_frames(self):
+        """A DEBUG=1 production build writes DBG lines between frames."""
+        result = Frame(bench.DISPENSE_RESULT, RID + bytes([1, 0, 1]))
+        stream = (
+            b"DBG DISPENSE_CMD id 01020304 slot 1 qty 1: accepted\r\n"
+            b"DBG dispense passed\r\n"
+            + encode_frame(result.msg_type, result.payload)
+            + b"DBG DISPENSE_RESULT id 01020304 slot 1: 0 OK, confirmed 1\r\n"
+        )
+        items = bench.StreamSplitter().feed(stream)
+        self.assertEqual(
+            items,
+            [
+                "DBG DISPENSE_CMD id 01020304 slot 1 qty 1: accepted",
+                "DBG dispense passed",
+                result,
+                "DBG DISPENSE_RESULT id 01020304 slot 1: 0 OK, confirmed 1",
+            ],
+        )
 
     def test_help_lists_the_menu(self):
         for word in ["test N", "raw S Q", "busy N", "noise N", "stop", "pon", "e [grams]"]:

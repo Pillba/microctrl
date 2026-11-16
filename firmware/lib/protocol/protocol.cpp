@@ -63,10 +63,14 @@ bool FrameParser::feed(uint8_t byte, Frame &frame)
 
 bool decodeDispenseCommand(const Frame &frame, DispenseCommand &command)
 {
-    if (frame.type != MSG_DISPENSE_CMD || frame.length != DISPENSE_CMD_LENGTH) return false;
+    if (frame.type != MSG_DISPENSE_CMD) return false;
+    if (frame.length != DISPENSE_CMD_LENGTH && frame.length != DISPENSE_CMD_WEIGHT_LENGTH) return false;
     for (uint8_t i = 0; i < REQUEST_ID_LENGTH; i++) command.requestId[i] = frame.payload[i];
     command.slot = frame.payload[4];
     command.quantity = frame.payload[5];
+    command.unitMg = 0;
+    if (frame.length == DISPENSE_CMD_WEIGHT_LENGTH)
+        command.unitMg = (uint16_t)frame.payload[6] | ((uint16_t)frame.payload[7] << 8);
     return true;
 }
 

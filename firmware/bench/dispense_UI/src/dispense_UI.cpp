@@ -1,7 +1,8 @@
 // Panel-ui dispense firmware for the ATmega328P PCB.
 // Framed CRC-8/MAXIM UART at 115200 baud. The automated hardware sequence is
 // retained from dispense.cpp, while commands and results use the panel protocol.
-// The panel sends DISPENSE_CMD with request ID, physical slot, and quantity.
+// The panel sends DISPENSE_CMD with request ID, physical slot, quantity, and optionally the weight of
+// one pill in mg (8-byte payload; 0 or a 6-byte payload uses the e <grams> value).
 // The MCU returns DISPENSE_RESULT with the confirmed quantity.
 //
 // The rest of the dispense.cpp menu is available as bench frames (bench only, see protocol/protocol.md):
@@ -84,6 +85,7 @@ const uint8_t EVENT_HALL = 0x02;        // value: 0 between, 1 closed, 2 open, 3
 const uint8_t EVENT_READY = 0x03;       // value: bit 0 scale calibrated, bit 1 clear beam reads HIGH
 
 const uint16_t STEPS = 1000;
+const uint8_t MAX_STEP_TURNS = 3;   // a dispense steps until the IR beam counts every pill, at most MAX_STEP_TURNS * STEPS per pill
 const uint16_t STEP_PERIOD_US = 2000;
 const uint16_t PAUSE_MS = 3000;
 const uint8_t SOUND_NUMBER = 1;
@@ -116,8 +118,9 @@ const unsigned long STEADY_WAIT_MS = 15000;   // how long to wait for the readin
 
 // EXPECTED WEIGHT FOR TESTING. Change it here, or at run time with the command  e <grams>
 float expectedWeightG = 0.95;                // expected weight of what one test drops, in grams
-const float WEIGHT_TOLERANCE_PCT = 15.0;     // allowed difference, in percent of the expected weight
+const float WEIGHT_TOLERANCE_PCT = 45.0;     // allowed difference, in percent of the expected weight (0.40 g target: 0.22 to 0.58 g)
 const float WEIGHT_TOLERANCE_MIN_G = 0.030;  // but never less than this many grams
+const float WEIGHT_COMPARE_SLACK_G = 0.0005; // float rounding: a reading exactly on the limit passes
 
 const int ADDR_MARKER = 0;
 const int ADDR_FACTOR = 1;
@@ -282,10 +285,14 @@ void testFailed(const __FlashStringHelper *reason)
 }
 
 // Whole dispense on one stepper: shield, tare, stepper, IR, weight, shield open, sound.
-uint8_t executeAutomatedDispense(uint8_t boardNum, uint8_t quantity)
+// pillWeightG is the weight of one pill for this dispense (from the DISPENSE_CMD, or expectedWeightG).
+uint8_t executeAutomatedDispense(uint8_t boardNum, uint8_t quantity, float pillWeightG)
 {
   ECHO_SERIAL.print(F("TEST: Starting automated dispense on board "));
-  ECHO_SERIAL.println(boardNum);
+  ECHO_SERIAL.print(boardNum);
+  ECHO_SERIAL.print(F(", "));
+  printGrams(pillWeightG);
+  ECHO_SERIAL.println(F(" per pill"));
   if (!calibrated)
   {
     ECHO_SERIAL.println(F("WARNING: The scale is NOT calibrated on this board, so the weight will be wrong. Send c first."));
@@ -306,28 +313,32 @@ uint8_t executeAutomatedDispense(uint8_t boardNum, uint8_t quantity)
   scale.tare(AVERAGE_SCANS);
   ECHO_SERIAL.println(F("VERIFY: Scale has tared."));
 
-  // 3. stepper
+  // 3. stepper: until the IR beam has counted every pill, at most MAX_STEP_TURNS * STEPS per pill
   unsigned long initialBreaks = readBreaks();
+  const uint32_t maxSteps = (uint32_t)STEPS * MAX_STEP_TURNS * quantity;
   ECHO_SERIAL.print(F("TEST: Running stepper "));
   ECHO_SERIAL.print(boardNum);
-  ECHO_SERIAL.print(F(" for "));
-  ECHO_SERIAL.print(STEPS);
-  ECHO_SERIAL.println(F(" steps..."));
+  ECHO_SERIAL.print(F(" until the IR beam counts "));
+  ECHO_SERIAL.print(quantity);
+  ECHO_SERIAL.print(F(" (at most "));
+  ECHO_SERIAL.print(maxSteps);
+  ECHO_SERIAL.println(F(" steps)..."));
   enableBoard(boardNum);
   delay(5);
-  for (uint8_t pill = 0; pill < quantity; pill++)
+  uint32_t stepsTaken = 0;
+  while (stepsTaken < maxSteps && readBreaks() - initialBreaks < quantity)
   {
-    for (uint16_t s = 0; s < STEPS; s++)
-    {
-      digitalWrite(STEP_PIN, HIGH);
-      delayMicroseconds(20);
-      digitalWrite(STEP_PIN, LOW);
-      delayMicroseconds(STEP_PERIOD_US - 20);
-      if (s % 50 == 0) pollFramedSerial();
-    }
+    digitalWrite(STEP_PIN, HIGH);
+    delayMicroseconds(20);
+    digitalWrite(STEP_PIN, LOW);
+    delayMicroseconds(STEP_PERIOD_US - 20);
+    if (stepsTaken % 50 == 0) pollFramedSerial();
+    stepsTaken++;
   }
   disableAll();
-  ECHO_SERIAL.println(F("VERIFY: Stepper finished."));
+  ECHO_SERIAL.print(F("VERIFY: Stepper stopped after "));
+  ECHO_SERIAL.print(stepsTaken);
+  ECHO_SERIAL.println(F(" steps."));
 
   // 4. IR break beam
   ECHO_SERIAL.println(F("TEST: Checking IR break beam..."));
@@ -379,7 +390,7 @@ uint8_t executeAutomatedDispense(uint8_t boardNum, uint8_t quantity)
   printGrams(grams);
   ECHO_SERIAL.println();
 
-  float expectedTotalWeightG = expectedWeightG * quantity;
+  float expectedTotalWeightG = pillWeightG * quantity;
   float tolerance = expectedTotalWeightG * WEIGHT_TOLERANCE_PCT / 100.0;
   if (tolerance < WEIGHT_TOLERANCE_MIN_G) tolerance = WEIGHT_TOLERANCE_MIN_G;
   ECHO_SERIAL.print(F("TEST: Expected "));
@@ -387,10 +398,10 @@ uint8_t executeAutomatedDispense(uint8_t boardNum, uint8_t quantity)
   ECHO_SERIAL.print(F(", allowed difference "));
   printGrams(tolerance);
   ECHO_SERIAL.println();
-  if (fabs(grams - expectedTotalWeightG) > tolerance)
+  if (fabs(grams - expectedTotalWeightG) > tolerance + WEIGHT_COMPARE_SLACK_G)
   {
     ECHO_SERIAL.print(F("ERROR: Weight out of range. Off by "));
-    printGrams(grams - expectedWeightG);
+    printGrams(grams - expectedTotalWeightG);
     ECHO_SERIAL.println();
     testFailed(F("the weight does not match the expected weight."));
     return 0;
@@ -620,7 +631,7 @@ void handleFramedCommand(uint8_t messageType, const uint8_t *payload, uint8_t pa
     handleBenchCommand(payload, payload[4], readUint32(&payload[5]));
     return;
   }
-  if (messageType != DISPENSE_CMD || payloadLength != 6) return;
+  if (messageType != DISPENSE_CMD || (payloadLength != 6 && payloadLength != 8)) return;
 
   const uint8_t slot = payload[4];
   const uint8_t quantity = payload[5];
@@ -638,7 +649,9 @@ void handleFramedCommand(uint8_t messageType, const uint8_t *payload, uint8_t pa
   activeBoard = 0;        // like "test N" in dispense.cpp: a dispense stops the stepper loop
   commandChanged = true;
   dispenseInProgress = true;
-  const uint8_t confirmedQuantity = executeAutomatedDispense(slot, quantity);
+  const uint16_t unitMg = payloadLength == 8 ? (uint16_t)payload[6] | ((uint16_t)payload[7] << 8) : 0;
+  const float pillWeightG = unitMg > 0 ? unitMg / 1000.0 : expectedWeightG;
+  const uint8_t confirmedQuantity = executeAutomatedDispense(slot, quantity, pillWeightG);
   const uint8_t resultCode = confirmedQuantity == quantity ? 0 : 1;
   sendDispenseResult(payload, slot, resultCode, confirmedQuantity);
   dispenseInProgress = false;

@@ -3,14 +3,16 @@
 Same menu as the plain-text firmware/bench/dispense/src/dispense.cpp, but every
 command is sent as a CRC-checked frame at 115200 baud instead of an ASCII line.
 The production firmware answers only test, raw, busy, noise and c (it ignores
-the other bench commands, so they time out):
+the other bench commands, so they time out with a NOTE saying so). A production
+build made with DEBUG=1 also prints DBG progress lines:
 
-    test N [Q]   DISPENSE_CMD slot N, quantity Q (default 1)  -> DISPENSE_RESULT
-                 (N = 7 is the liquid dispenser, Q in mL)
-    raw S Q      DISPENSE_CMD with no range check (slot 0, 8, quantity 0, ...)
-    busy N [Q]   test N, then a second command 1 s later: expects BUSY (3)
+    test N [Q] [G]  DISPENSE_CMD slot N, quantity Q (default 1)  -> DISPENSE_RESULT
+                 (N = 7 is the liquid dispenser, Q in mL). G = grams per pill (per mL
+                 for 7), sent as unit_weight_mg; without G the firmware's default is used
+    raw S Q [G]  DISPENSE_CMD with no range check (slot 0, 8, quantity 0, ...)
+    busy N [Q] [G]  test N, then a second command 1 s later: expects BUSY (3)
                  for the second within 5 s, then the first one's result
-    noise N [Q]  test N while random non-0xAA bytes are sent: expects exactly
+    noise N [Q] [G]  test N while random non-0xAA bytes are sent: expects exactly
                  one reply
     1 ... 6      BENCH_CMD STEPPER_LOOP N    (run that stepper again and again)
     stop         BENCH_CMD STOP
@@ -190,10 +192,31 @@ def bench_frame(request_id: bytes, command: int, arg: int = 0) -> Frame:
     return Frame(BENCH_CMD, request_id + bytes([command]) + arg.to_bytes(4, "little"))
 
 
-def dispense_frame(request_id: bytes, slot: int, quantity: int) -> Frame:
+MAX_UNIT_WEIGHT_MG = 0xFFFF  # unit_weight_mg is a uint16
+
+
+def dispense_frame(request_id: bytes, slot: int, quantity: int, unit_mg: int | None = None) -> Frame:
+    """DISPENSE_CMD: 6-byte payload, or 8 bytes with unit_weight_mg (uint16 LE) when unit_mg is set."""
     if len(request_id) != 4:
         raise ValueError("request ID must be 4 bytes")
-    return Frame(DISPENSE_CMD, request_id + bytes([slot, quantity]))
+    payload = request_id + bytes([slot, quantity])
+    if unit_mg is not None:
+        if not 0 <= unit_mg <= MAX_UNIT_WEIGHT_MG:
+            raise ValueError("unit weight must be 0 to 65535 mg")
+        payload += unit_mg.to_bytes(2, "little")
+    return Frame(DISPENSE_CMD, payload)
+
+
+def grams_to_milligrams(text: str) -> int:
+    """Unit weight for DISPENSE_CMD: '0.65' -> 650 mg (0.001 to 65.535 g)."""
+    try:
+        grams = float(text)
+    except ValueError as error:
+        raise MenuError(f"not a number of grams: {text!r}") from error
+    milligrams = round(grams * 1000)
+    if not 1 <= milligrams <= MAX_UNIT_WEIGHT_MG:
+        raise MenuError("grams per pill (or per mL) must be 0.001 to 65.535")
+    return milligrams
 
 
 def grams_to_micrograms(text: str) -> int:
@@ -206,16 +229,21 @@ def grams_to_micrograms(text: str) -> int:
     return round(grams * MICROGRAMS_PER_GRAM)
 
 
-def parse_test_words(words: list[str]) -> tuple[int, int]:
-    """'test N [Q]' (also busy / noise): slot 1-7 and quantity 1-255."""
-    if len(words) not in (2, 3) or not words[1].isdigit() or not 1 <= int(words[1]) <= LIQUID_SLOT:
-        raise MenuError(f"use {words[0]} 1 to {words[0]} 7, optionally followed by a quantity (mL for 7)")
-    if len(words) == 3 and not words[2].isdigit():
+def parse_test_words(words: list[str]) -> tuple[int, int, int | None]:
+    """'test N [Q] [G]' (also busy / noise): slot 1-7, quantity 1-255, and the optional
+    unit weight in grams, returned as milligrams (None: let the firmware use its default)."""
+    if len(words) not in (2, 3, 4) or not words[1].isdigit() or not 1 <= int(words[1]) <= LIQUID_SLOT:
+        raise MenuError(
+            f"use {words[0]} 1 to {words[0]} 7, optionally followed by a quantity (mL for 7) "
+            "and the grams per pill (per mL for 7)"
+        )
+    if len(words) >= 3 and not words[2].isdigit():
         raise MenuError("quantity must be 1 to 255")
-    quantity = int(words[2]) if len(words) == 3 else 1
+    quantity = int(words[2]) if len(words) >= 3 else 1
     if not 1 <= quantity <= 255:
         raise MenuError("quantity must be 1 to 255")
-    return int(words[1]), quantity
+    unit_mg = grams_to_milligrams(words[3]) if len(words) == 4 else None
+    return int(words[1]), quantity, unit_mg
 
 
 def parse_menu_line(line: str, request_id: bytes) -> MenuCommand:
@@ -226,20 +254,24 @@ def parse_menu_line(line: str, request_id: bytes) -> MenuCommand:
     word = words[0].lower()
 
     if word in ("test", "busy", "noise"):
-        slot, quantity = parse_test_words(words)
+        slot, quantity, unit_mg = parse_test_words(words)
         unit = "mL" if slot == LIQUID_SLOT else "quantity"
+        weight = ""
+        if unit_mg is not None:
+            weight = f", {unit_mg / 1000:g} g per {'mL' if slot == LIQUID_SLOT else 'pill'}"
         return MenuCommand(
-            dispense_frame(request_id, slot, quantity),
+            dispense_frame(request_id, slot, quantity, unit_mg),
             timeout=dispense_timeout(slot, quantity),
-            label=f"{word} {slot} ({unit} {quantity})",
+            label=f"{word} {slot} ({unit} {quantity}{weight})",
         )
 
     if word == "raw":
-        if len(words) != 3 or not all(w.isdigit() and int(w) <= 255 for w in words[1:]):
-            raise MenuError("use raw <slot 0-255> <quantity 0-255>")
+        if len(words) not in (3, 4) or not all(w.isdigit() and int(w) <= 255 for w in words[1:3]):
+            raise MenuError("use raw <slot 0-255> <quantity 0-255> [grams per unit]")
         slot, quantity = int(words[1]), int(words[2])
+        unit_mg = grams_to_milligrams(words[3]) if len(words) == 4 else None
         return MenuCommand(
-            dispense_frame(request_id, slot, quantity),
+            dispense_frame(request_id, slot, quantity, unit_mg),
             timeout=dispense_timeout(slot, quantity),
             label=f"raw slot {slot} quantity {quantity}",
         )
@@ -317,6 +349,24 @@ def describe_frame(frame: Frame) -> str:
             return f"EVENT: MCU ready, scale {calibrated}, clear beam reads {beam}"
         return f"EVENT: 0x{event:02X} value {value}"
     return f"FRAME 0x{frame.msg_type:02X}: {p.hex(' ').upper()}"
+
+
+PRODUCTION_BENCH_COMMANDS = (CMD_CALIBRATE_START, CMD_CALIBRATE_FINISH)
+
+
+def no_answer_hint(sent: Frame) -> str | None:
+    """Why a command may have gone unanswered: production ignores every bench
+    command except calibration, so with production flashed they always time out."""
+    if sent.msg_type != BENCH_CMD or len(sent.payload) < 5:
+        return None
+    command = sent.payload[4]
+    if command in PRODUCTION_BENCH_COMMANDS:
+        return None
+    name = COMMAND_NAMES.get(command, f"0x{command:02X}")
+    return (
+        f"production firmware ignores bench command {name} (only calibration, c, runs there). "
+        "Flash firmware/bench/dispense_UI to use it, or use test/raw/busy/noise with production."
+    )
 
 
 def frame_succeeded(frame: Frame, sent: Frame, expect_code: int | None = None) -> bool:
@@ -463,6 +513,9 @@ class BenchSession:
     def _judge(self, frame: Frame | None, sent: Frame, timeout: float) -> bool:
         if frame is None:
             print(f"  FAIL: no answer within {timeout:.0f} s (outcome UNKNOWN)", flush=True)
+            hint = no_answer_hint(sent)
+            if hint:
+                print(f"  NOTE: {hint}", flush=True)
             return False
         ok = frame_succeeded(frame, sent, self.expect_code)
         print(f"  {'PASS' if ok else 'FAIL'}: {describe_frame(frame)}", flush=True)
@@ -476,7 +529,7 @@ class BenchSession:
     def run_busy(self, command: MenuCommand) -> bool:
         """A second command during a dispense must be answered BUSY (3) at once."""
         first = command.frame
-        second = dispense_frame(self.next_request_id(), first.payload[4], first.payload[5])
+        second = Frame(DISPENSE_CMD, self.next_request_id() + first.payload[4:])  # same slot, quantity, weight
         started = time.monotonic()
         self._write(first, command.label)
         time.sleep(self.busy_delay)

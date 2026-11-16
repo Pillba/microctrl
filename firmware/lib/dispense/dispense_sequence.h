@@ -13,8 +13,9 @@
 // Pills (slot 1-6):
 //   1. close the shield (hall sensor confirms if fitted; a missing confirmation is only a warning)
 //   2. tare the scale
-//   3. run the stepper STEPS_PER_PILL * quantity
-//   4. the IR beam must count at least quantity breaks
+//   3. run the stepper until the IR beam has counted quantity breaks, at most
+//      MAX_STEP_TURNS * STEPS_PER_PILL * quantity steps
+//   4. the IR beam must count at least quantity breaks (a pill still falling gets IR_WAIT_MS)
 //   5. weight must arrive, settle, and match quantity * expected pill weight
 //   6. open the shield
 //
@@ -35,8 +36,8 @@ enum class DispenseEvent : uint8_t
     SHIELD_CLOSED,     // report.shieldConfirmed
     TARING,
     TARED,
-    STEPPING,
-    STEPPED,
+    STEPPING,          // report.steps = the step limit
+    STEPPED,           // report.steps = steps taken
     IR_CHECKING,
     IR_CONFIRMED,      // report.trips
     PUMPING,           // report.expectedG (target)
@@ -59,8 +60,10 @@ struct DispenseReport
     uint8_t confirmedQuantity = 0;
     bool shieldConfirmed = false;
     unsigned long trips = 0;
+    uint32_t steps = 0;
     float grams = 0;
     bool steady = false;
+    float unitG = 0;                   // weight of one pill / one mL used for this dispense
     float expectedG = 0;
     float toleranceG = 0;
     unsigned long pumpMs = 0;
@@ -85,7 +88,9 @@ public:
     float pillWeight() const { return pillWeightG_; }
 
     // Caller validates slot and quantity (dispense::validRequest). Slot 7 is the liquid dispenser.
-    dispense::ResultCode run(uint8_t slot, uint8_t quantity, DispenseReport &report);
+    // unitG is the weight of one pill (or of one mL for slot 7) for this dispense; 0 or less uses
+    // pillWeight() (or DEFAULT_LIQUID_G_PER_ML).
+    dispense::ResultCode run(uint8_t slot, uint8_t quantity, DispenseReport &report, float unitG = 0);
 
 private:
     dispense::ResultCode runPills(uint8_t slot, uint8_t quantity, DispenseReport &report);
